@@ -1,0 +1,62 @@
+# Build trees and local executables
+/build*/
+/cmake-build-*/
+/mhd2d
+/mhd2d_verify
+/tests/verify
+
+# CMake-generated files from in-source builds
+/CMakeCache.txt
+/CMakeFiles/
+/Makefile
+/cmake_install.cmake
+/compile_commands.json
+
+# Runtime output: AMReX plotfiles and scientific containers
+/plt_*/
+/plt*/
+/*.bp/
+/*.h5
+/*.hdf5
+/*.vtk
+/*.vtu
+/results/
+
+# Generated verification artifacts (canonical report figures live in docs/figures)
+/out_*.csv
+/tests/*.csv
+/tests/*.png
+
+# Generated report and LaTeX auxiliaries
+/docs/report.pdf
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# Profilers and coverage
+*.ncu-rep
+*.nsys-rep
+*.sqlite
+*.prof
+*.gcda
+*.gcno
+*.lcov
+
+# Python, editors and operating systems
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.DS_Store
+.idea/
+.vscode/
+*~
+*.swp

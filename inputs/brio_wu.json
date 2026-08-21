@@ -1,0 +1,10 @@
+{
+  "problem": "brio_wu",
+  "problem_params": { "x_interface": 0.5, "Bx": 0.75 },
+  "geometry": { "prob_lo": [0.0, 0.0], "prob_hi": [1.0, 0.01], "n_cell": [512, 4] },
+  "amr": { "max_level": 0 },
+  "bc": { "x_lo": "dirichlet", "x_hi": "dirichlet", "y_lo": "periodic", "y_hi": "periodic" },
+  "time": { "cfl": 0.5, "t_max": 0.1, "integrator": "rk2" },
+  "scheme": { "gamma": 2.0, "limiter": "mc", "emf_averaging": "gardiner_stone" },
+  "output": { "plot_dt": 0.02, "prefix": "plt_bw", "output_dir": "results/brio_wu", "format": "hdf5", "diag_int": 50 }
+}

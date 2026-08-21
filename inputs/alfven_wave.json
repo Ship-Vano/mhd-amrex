@@ -1,0 +1,14 @@
+{
+  "problem": "alfven_wave",
+  "problem_params": { "alpha_deg": 30.0, "amplitude": 0.1 },
+  "geometry": {
+    "prob_lo": [0.0, 0.0],
+    "prob_hi": [1.1547005383792517, 2.0],
+    "n_cell": [64, 110]
+  },
+  "amr": { "max_level": 0 },
+  "bc": { "x_lo": "periodic", "x_hi": "periodic", "y_lo": "periodic", "y_hi": "periodic" },
+  "time": { "cfl": 0.5, "t_max": 1.0, "integrator": "rk2" },
+  "scheme": { "gamma": 1.6666666666666667, "limiter": "mc", "emf_averaging": "gardiner_stone" },
+  "output": { "plot_dt": 0.25, "prefix": "plt_alfven", "output_dir": "results/alfven_wave", "format": "hdf5", "diag_int": 20 }
+}

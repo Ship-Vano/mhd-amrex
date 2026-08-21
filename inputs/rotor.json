@@ -1,0 +1,13 @@
+{
+  "problem": "rotor",
+  "problem_params": { "r0": 0.1, "r1": 0.115, "v0": 2.0 },
+  "geometry": { "prob_lo": [0.0, 0.0], "prob_hi": [1.0, 1.0], "n_cell": [200, 200] },
+  "amr": {
+    "max_level": 1, "ref_ratio": 2, "regrid_int": 4,
+    "blocking_factor": 8, "max_grid_size": 64, "refine_grad_rho": 0.15
+  },
+  "bc": { "x_lo": "outflow", "x_hi": "outflow", "y_lo": "outflow", "y_hi": "outflow" },
+  "time": { "cfl": 0.5, "t_max": 0.15, "integrator": "rk2" },
+  "scheme": { "gamma": 1.4, "limiter": "mc", "emf_averaging": "gardiner_stone" },
+  "output": { "plot_dt": 0.05, "prefix": "plt_rotor", "output_dir": "results/rotor", "format": "hdf5", "diag_int": 20 }
+}

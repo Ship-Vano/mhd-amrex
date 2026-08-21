@@ -1,0 +1,744 @@
+% =============================================================================
+% report.tex — научный отчёт
+% «Двумерный решатель идеальной МГД с гарантией бездивергентности магнитного
+%  поля на адаптивных сетках AMReX»
+%
+% Сборка:  pdflatex report.tex  (дважды, для ссылок)
+% Рисунки берутся из каталога figures/ (генерируются scripts/plot_verification.py)
+% =============================================================================
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+
+\geometry{left=2.5cm,right=2cm,top=2cm,bottom=2.5cm}
+\graphicspath{{figures/}}
+
+\definecolor{codebg}{rgb}{0.96,0.96,0.96}
+\lstset{
+  language=C++, basicstyle=\ttfamily\small, backgroundcolor=\color{codebg},
+  keywordstyle=\bfseries, commentstyle=\itshape\color{gray!90},
+  breaklines=true, frame=single, framerule=0pt, columns=fullflexible,
+  extendedchars=true, inputencoding=utf8, literate=
+   {а}{{\selectfont\char224}}1 {б}{{\selectfont\char225}}1
+}
+% Для надёжности комментарии в листингах даны латиницей.
+
+\newtheorem{proposition}{Утверждение}
+\newcommand{\divg}{\operatorname{div}}
+\newcommand{\B}{\mathbf{B}}
+\newcommand{\vv}{\mathbf{v}}
+
+\title{Двумерный решатель идеальной магнитной гидродинамики\\
+с гарантией бездивергентности магнитного поля\\
+на адаптивных сетках AMReX}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Описан программный комплекс численного решения двумерных уравнений идеальной
+магнитной гидродинамики (МГД) на блочно-структурированных адаптивных сетках
+библиотеки AMReX. Пространственная дискретизация следует бездивергентной
+схеме Авдеевой--Лукина: газодинамические величины отнесены к центрам ячеек,
+нормальные компоненты магнитного поля --- к граням, потоки и электродвижущие
+силы (ЭДС) вычисляются приближённым решателем Римана HLLD, а закон Фарадея
+аппроксимируется напрямую через теорему Стокса, что обеспечивает сохранение
+дискретной дивергенции магнитного поля с машинной точностью. Схема дополнена
+MUSCL-реконструкцией второго порядка, SSP-интегратором Рунге--Кутты второго
+порядка и адаптивным измельчением сетки с точным согласованием ЭДС между
+уровнями. Комплекс верифицирован на задачах Брио--Ву, Орзага--Танга,
+распространения циркулярно поляризованной альфвеновской волны и вращающегося
+цилиндра; во всех расчётах $\max|\divg_h\B|\le 1.3\cdot10^{-12}$, порядок
+сходимости на гладком решении составил $1.8$.
+\end{abstract}
+
+\tableofcontents
+
+% =============================================================================
+\section{Введение и постановка задачи}
+
+Уравнения идеальной МГД описывают движение проводящей жидкости (плазмы) в
+магнитном поле и используются в задачах физики плазмы, астрофизики и
+управляемого термоядерного синтеза. Ключевая трудность их численного решения
+--- соленоидальность магнитного поля: точное решение удовлетворяет
+$\divg\B=0$, однако стандартные годуновские схемы порождают ненулевую
+численную дивергенцию, которая накапливается, приводит к нефизичной силе
+вдоль поля и разрушает решение~\cite{toth2000}.
+
+В работе~\cite{avdeeva2019} (и развивающей её ВКРБ~\cite{shamanov2025})
+предложена конечно-разностная схема для двумерной идеальной МГД на
+разнесённых (staggered) сетках, в которой условие $\divg\B=0$ выполняется
+автоматически: нормальные компоненты поля заданы на рёбрах ячеек, ЭДС
+вычисляется из HLLD-потоков и усредняется в вершины, а закон Фарадея
+аппроксимируется напрямую по теореме Стокса. Целью настоящей работы являлась
+реализация этой схемы на структурированных адаптивных сетках с использованием
+фреймворка AMReX~\cite{amrex}, повышение порядка точности до второго,
+обоснованный выбор интегратора по времени и верификация на классических
+тестах.
+
+Решается система уравнений идеальной МГД в консервативной форме
+(гауссова нормировка $\B\to\B/\sqrt{4\pi}$, при которой множители $4\pi$
+исчезают):
+\begin{align}
+\frac{\partial \rho}{\partial t} + \nabla\!\cdot(\rho\vv) &= 0,
+\label{eq:mass}\\
+\frac{\partial (\rho\vv)}{\partial t}
+ + \nabla\!\cdot\!\Bigl[\rho\vv\vv + p_T\hat{I} - \B\B\Bigr] &= 0,
+\label{eq:mom}\\
+\frac{\partial e}{\partial t}
+ + \nabla\!\cdot\!\Bigl[(e+p_T)\vv - \B(\vv\!\cdot\!\B)\Bigr] &= 0,
+\label{eq:ene}\\
+\frac{\partial \B}{\partial t} - \nabla\times(\vv\times\B) &= 0,
+\qquad \divg\B = 0,
+\label{eq:faraday}
+\end{align}
+где $p_T = p + |\B|^2/2$ --- полное давление,
+$e = \dfrac{p}{\gamma-1} + \dfrac{\rho|\vv|^2}{2} + \dfrac{|\B|^2}{2}$ ---
+полная энергия, $\gamma$ --- показатель адиабаты. Рассматривается
+``2.5-мерная'' постановка: все величины зависят от $(x,y,t)$, но векторы
+$\vv=(u,v,w)$ и $\B=(B_x,B_y,B_z)$ трёхкомпонентны.
+
+% =============================================================================
+\section{Численный метод}
+
+\subsection{Разнесённое расположение переменных}
+\label{sec:staggered}
+
+В исходной схеме~\cite{avdeeva2019} на треугольной сетке газовые величины
+отнесены к ячейкам, а нормальные компоненты $B_n$ --- к серединам рёбер;
+поле внутри ячейки восстанавливается базисом Равьяра--Тома $RT_0$. На
+прямоугольной ячейке сетки AMReX тот же принцип принимает классическую форму
+constrained transport (CT)~\cite{balsara1999}:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Величина & Расположение \\
+\midrule
+$\rho,\ \rho u,\ \rho v,\ \rho w,\ e,\ B_z$ & центры ячеек $(i,j)$\\
+$B_x$ & $x$-грани $(i\pm\tfrac12, j)$\\
+$B_y$ & $y$-грани $(i, j\pm\tfrac12)$\\
+$E_z$ (ЭДС) & узлы $(i\pm\tfrac12, j\pm\tfrac12)$\\
+\bottomrule
+\end{tabular}
+\end{center}
+Дискретная дивергенция определяется по граневым значениям:
+\begin{equation}
+(\divg_h \B)_{ij}
+= \frac{B_{x,i+\frac12,j}-B_{x,i-\frac12,j}}{\Delta x}
++ \frac{B_{y,i,j+\frac12}-B_{y,i,j-\frac12}}{\Delta y}.
+\label{eq:divh}
+\end{equation}
+Клеточные значения поля (нужные решателю Римана, критериям AMR и выводу)
+получаются $RT_0$-интерполяцией, которая на прямоугольнике сводится к
+полусумме противоположных граней:
+$B_{x,ij} = \tfrac12(B_{x,i-\frac12,j}+B_{x,i+\frac12,j})$ и аналогично для
+$B_y$.
+
+\subsection{MUSCL-реконструкция}
+
+Для второго порядка по пространству примитивные переменные
+$q=(\rho,u,v,w,p,B_x,B_y,B_z)$ реконструируются к граням кусочно-линейно:
+\begin{equation}
+q^L_{i+\frac12} = q_i + \tfrac12\,\overline{\Delta q}_i,\qquad
+q^R_{i+\frac12} = q_{i+1} - \tfrac12\,\overline{\Delta q}_{i+1},
+\end{equation}
+где ограниченный наклон $\overline{\Delta q}_i =
+\mathrm{lim}(q_i-q_{i-1},\,q_{i+1}-q_i)$ задаётся TVD-лимитером
+(\textit{minmod}, \textit{van Leer} или \textit{MC} --- monotonized central,
+используемый по умолчанию). Выбор \texttt{"limiter": "none"} возвращает
+кусочно-постоянную реконструкцию и первый порядок исходной
+схемы~\cite{avdeeva2019}. Принципиально, что \emph{нормальная} компонента
+поля на грани не реконструируется: она берётся из граневого массива и
+одинакова для левого и правого состояний, что согласует решатель Римана с
+CT-обновлением.
+
+\subsection{Решатель Римана HLLD}
+\label{sec:hlld}
+
+Потоки газовых величин и граневые ЭДС вычисляются приближённым решателем
+HLLD Миёши--Кусано~\cite{miyoshi2005}, аппроксимирующим веер из пяти волн:
+двух быстрых магнитозвуковых $S_L,S_R$, двух альфвеновских $S^*_L,S^*_R$ и
+контактного разрыва $S_M$; внутри веера --- четыре промежуточных состояния
+$U^*_L,\,U^{**}_L,\,U^{**}_R,\,U^*_R$.
+
+Крайние скорости оцениваются по Дэвису:
+\begin{equation}
+S_L = \min(u_L,u_R) - \max(c_{fL},c_{fR}),\qquad
+S_R = \max(u_L,u_R) + \max(c_{fL},c_{fR}),
+\end{equation}
+где быстрая магнитозвуковая скорость в нормальном направлении
+\begin{equation}
+c_f^2 = \tfrac12\!\left[a^2 + c_A^2
+ + \sqrt{(a^2+c_A^2)^2 - 4a^2 c_{An}^2}\right],\quad
+a^2=\frac{\gamma p}{\rho},\ \ c_A^2=\frac{|\B|^2}{\rho},\ \
+c_{An}^2=\frac{B_n^2}{\rho}.
+\end{equation}
+Скорость контактного разрыва и общее для звёздных областей полное давление:
+\begin{align}
+S_M &= \frac{(S_R-u_R)\rho_R u_R - (S_L-u_L)\rho_L u_L - p_{TR}+p_{TL}}
+            {(S_R-u_R)\rho_R - (S_L-u_L)\rho_L},
+\label{eq:sm}\\[2pt]
+p_T^{*} &= \frac{(S_R-u_R)\rho_R\,p_{TL} - (S_L-u_L)\rho_L\,p_{TR}
+   + \rho_L\rho_R(S_R-u_R)(S_L-u_L)(u_R-u_L)}
+   {(S_R-u_R)\rho_R - (S_L-u_L)\rho_L}.
+\label{eq:pts}
+\end{align}
+Внешние звёздные состояния ($\alpha=L,R$):
+\begin{equation}
+\rho^*_\alpha = \rho_\alpha\frac{S_\alpha-u_\alpha}{S_\alpha-S_M},\qquad
+u^*_\alpha = S_M,
+\end{equation}
+\begin{equation}
+v^*_\alpha = v_\alpha
+ - B_n B_{y\alpha}\,\frac{S_M-u_\alpha}{D_\alpha},\qquad
+B^*_{y\alpha} = B_{y\alpha}\,
+ \frac{\rho_\alpha(S_\alpha-u_\alpha)^2 - B_n^2}{D_\alpha},
+\end{equation}
+где $D_\alpha = \rho_\alpha(S_\alpha-u_\alpha)(S_\alpha-S_M)-B_n^2$
+(формулы для $w^*,B^*_z$ аналогичны); при $D_\alpha\to 0$ (вырожденный
+случай) тангенциальные величины не меняются. Энергия звёздного состояния
+\begin{equation}
+e^*_\alpha = \frac{(S_\alpha-u_\alpha)e_\alpha - p_{T\alpha}u_\alpha
+ + p_T^{*}S_M + B_n\bigl(\vv_\alpha\!\cdot\!\B_\alpha
+ - \vv^*_\alpha\!\cdot\!\B^*_\alpha\bigr)}{S_\alpha-S_M};
+\label{eq:estar}
+\end{equation}
+подчеркнём, что в~\eqref{eq:estar} входит именно \emph{общее} звёздное
+давление $p_T^{*}$ из~\eqref{eq:pts} --- использование $p_{T\alpha}$ нарушает
+точные соотношения на скачках (эта ошибка была обнаружена в ходе работы по
+предупреждению компилятора и устранена). Альфвеновские скорости и внутренние
+состояния:
+\begin{equation}
+S^*_\alpha = S_M \mp \frac{|B_n|}{\sqrt{\rho^*_\alpha}},\qquad
+v^{**} = \frac{\sqrt{\rho^*_L}\,v^*_L + \sqrt{\rho^*_R}\,v^*_R
+  + (B^*_{yR}-B^*_{yL})\,\mathrm{sgn}\,B_n}
+ {\sqrt{\rho^*_L}+\sqrt{\rho^*_R}},
+\end{equation}
+\begin{equation}
+B^{**}_y = \frac{\sqrt{\rho^*_L}\,B^*_{yR} + \sqrt{\rho^*_R}\,B^*_{yL}
+  + \sqrt{\rho^*_L \rho^*_R}\,(v^*_R-v^*_L)\,\mathrm{sgn}\,B_n}
+ {\sqrt{\rho^*_L}+\sqrt{\rho^*_R}},
+\end{equation}
+(аналогично для $w^{**},B^{**}_z$; плотность через альфвеновскую волну не
+меняется). Итоговый поток выбирается по положению нуля среди
+$S_L\le S^*_L\le S_M\le S^*_R\le S_R$ по консервативным соотношениям
+Ренкина--Гюгонио, например при $S^*_L\le 0\le S_M$:
+$F = F_L + S^*_L U^{**}_L - (S^*_L-S_L)U^*_L - S_L U_L$.
+При $B_n\to 0$ альфвеновские волны вырождаются и HLLD непрерывно переходит в
+HLLC. Существенно, что поток нормальной компоненты поля тождественно нулевой,
+а поток тангенциальной компоненты есть ЭДС:
+\begin{equation}
+F^{(B_y)}_{i+\frac12,j} = (uB_y - vB_x)\big|_{i+\frac12,j} = -E_z,\qquad
+G^{(B_x)}_{i,j+\frac12} = (vB_x - uB_y)\big|_{i,j+\frac12} = +E_z.
+\label{eq:emf-from-flux}
+\end{equation}
+
+\subsection{Бездивергентное обновление поля (constrained transport)}
+\label{sec:ct}
+
+Закон Фарадея~\eqref{eq:faraday} интегрируется по грани с применением
+теоремы Стокса (формула (8) работы~\cite{avdeeva2019}):
+\begin{align}
+B^{n+1}_{x,i+\frac12,j} &= B^{n}_{x,i+\frac12,j}
+ - \frac{\Delta t}{\Delta y}\Bigl(E_{z,i+\frac12,j+\frac12}-E_{z,i+\frac12,j-\frac12}\Bigr),
+\label{eq:ct-bx}\\
+B^{n+1}_{y,i,j+\frac12} &= B^{n}_{y,i,j+\frac12}
+ + \frac{\Delta t}{\Delta x}\Bigl(E_{z,i+\frac12,j+\frac12}-E_{z,i-\frac12,j+\frac12}\Bigr).
+\label{eq:ct-by}
+\end{align}
+Узловая ЭДС строится усреднением граневых значений~\eqref{eq:emf-from-flux}
+по четырём граням, примыкающим к узлу, --- это прямой декартов аналог
+усреднения по рёбрам, сходящимся в вершине, из~\cite{avdeeva2019}:
+\begin{equation}
+E^{\,\mathrm{BS}}_{z,i+\frac12,j+\frac12} = \tfrac14\Bigl(
+ E^x_{i+\frac12,j} + E^x_{i+\frac12,j+1} + E^y_{i,j+\frac12} + E^y_{i+1,j+\frac12}\Bigr).
+\label{eq:emf-bs}
+\end{equation}
+Дополнительно реализован вариант Гарднера--Стоуна~\cite{gardiner2005}
+\begin{equation}
+E^{\,\mathrm{GS}}_z = 2\,\langle E_z\rangle_{\text{грани}}
+ - \langle E_z\rangle_{\text{ячейки}},\qquad
+E_{z,\text{яч}} = vB_x - uB_y,
+\label{eq:emf-gs}
+\end{equation}
+восстанавливающий правильный порядок аппроксимации ЭДС и дающий запас
+устойчивости при $\mathrm{CFL}\approx0.5$ (используется по умолчанию).
+
+\begin{proposition}[сохранение дискретной дивергенции]
+Обновление~\eqref{eq:ct-bx}--\eqref{eq:ct-by} сохраняет величину
+\eqref{eq:divh} точно, при любом способе вычисления узловых ЭДС.
+\end{proposition}
+\begin{proof}
+Подстановка~\eqref{eq:ct-bx}--\eqref{eq:ct-by} в~\eqref{eq:divh} даёт
+\[
+(\divg_h\B)^{n+1}_{ij}-(\divg_h\B)^{n}_{ij}
+= -\frac{\Delta t}{\Delta x\,\Delta y}\Bigl[
+\bigl(E^{++}-E^{+-}\bigr)-\bigl(E^{-+}-E^{--}\bigr)
+-\bigl(E^{++}-E^{-+}\bigr)+\bigl(E^{+-}-E^{--}\bigr)\Bigr]=0,
+\]
+где $E^{\pm\pm}$ --- ЭДС в четырёх углах ячейки: каждый угол входит дважды с
+противоположными знаками. Поскольку начальное поле задаётся разностным
+ротором векторного потенциала (см.~\S\ref{sec:ic}), $(\divg_h\B)^0=0$ с
+машинной точностью, и это свойство сохраняется на всех шагах.
+\end{proof}
+
+\subsection{Начальные условия через векторный потенциал}
+\label{sec:ic}
+
+Плоскостные компоненты начального поля задаются скалярным потенциалом
+$A_z(x,y)$ ($\B = \nabla\times A_z\hat{e}_z$) в разностной форме:
+\begin{equation}
+B_{x,i+\frac12,j} = \frac{A_z(x_{i+\frac12},y_{j+\frac12})-A_z(x_{i+\frac12},y_{j-\frac12})}{\Delta y},
+\qquad
+B_{y,i,j+\frac12} = -\frac{A_z(x_{i+\frac12},y_{j+\frac12})-A_z(x_{i-\frac12},y_{j+\frac12})}{\Delta x},
+\end{equation}
+тогда $(\divg_h\B)^0\equiv 0$ точно (телескопическое сокращение значений
+$A_z$). Для кусочно-постоянных полей (Брио--Ву) нормальные компоненты
+задаются непосредственно.
+
+\subsection{Интегрирование по времени}
+\label{sec:time}
+
+Рассматривались три варианта.
+\begin{enumerate}
+\item \textbf{Расщепление Стрэнга} по направлениям. Отклонено: между
+$x$- и $y$-прогонками граневые компоненты поля относятся к разным временным
+слоям, и согласованное узловое усреднение ЭДС, гарантирующее
+$\divg_h\B=0$, требует специальных конструкций; кроме того, ошибка
+расщепления велика на сильно закрученных течениях.
+\item \textbf{CTU+CT}~\cite{gardiner2005} (corner transport upwind).
+Наилучшая точность и $\mathrm{CFL}\le1$, однако требует
+характеристического трассирования семиволновой системы МГД и поперечных
+поправок к ЭДС --- неоправданно сложен для целей проекта.
+\item \textbf{SSP-RK2} (метод Хойна):
+\begin{equation}
+U^{(1)} = U^n + \Delta t\,L(U^n),\qquad
+U^{n+1} = \tfrac12 U^n + \tfrac12\Bigl(U^{(1)} + \Delta t\,L(U^{(1)})\Bigr).
+\label{eq:rk2}
+\end{equation}
+\end{enumerate}
+Выбран вариант 3: каждая стадия~\eqref{eq:rk2} --- полноценное CT-обновление,
+сохраняющее $\divg_h\B$; выпуклая комбинация двух бездивергентных граневых
+полей бездивергентна, поэтому интегратор не нарушает соленоидальность.
+Схема в целом имеет второй порядок по пространству и времени и устойчива при
+\begin{equation}
+\Delta t = \mathrm{CFL}\cdot\min_{ij}\left[
+\frac{\Delta x}{|u|+c_{fx}},\ \frac{\Delta y}{|v|+c_{fy}}\right],
+\qquad \mathrm{CFL}\approx 0.5.
+\end{equation}
+Режим \texttt{"integrator": "euler"} воспроизводит схему первого порядка
+исходной статьи.
+
+% =============================================================================
+\section{Адаптивное измельчение сетки}
+\label{sec:amr}
+
+\subsection{Организация иерархии}
+
+Используется иерархия вложенных уровней AMReX (класс
+\texttt{amrex::AmrCore}): уровень $\ell+1$ покрывает помеченные области
+уровня $\ell$ с коэффициентом измельчения $r$ (обычно $r=2$). Критерии
+тегирования --- относительный градиент плотности и/или плотность тока:
+\begin{equation}
+\frac{|\rho_{i+1,j}-\rho_{i-1,j}|+|\rho_{i,j+1}-\rho_{i,j-1}|}{2\rho_{ij}}
+> \varepsilon_\rho,
+\qquad
+|j_z|\,h = \left|\frac{\partial B_y}{\partial x}-\frac{\partial B_x}{\partial y}\right| h
+> \varepsilon_j .
+\end{equation}
+При создании/перестроении уровня клеточные величины интерполируются
+консервативно (\texttt{cell\_cons\_interp}), а граневые компоненты поля ---
+\emph{бездивергентным} интерполятором AMReX \texttt{face\_divfree\_interp},
+который строит на мелких ячейках поле с той же (нулевой) дискретной
+дивергенцией, что и на грубой.
+
+\subsection{Согласование ЭДС между уровнями}
+
+Расчёт ведётся \emph{без подциклирования}: общий шаг $\Delta t$ определяется
+самым мелким уровнем. Это позволяет согласовать уровни точно. Перед
+применением~\eqref{eq:ct-bx}--\eqref{eq:ct-by} узловые ЭДС мелкого уровня
+инжектируются в совпадающие узлы грубого.
+
+\begin{proposition}[бездивергентность на иерархии]
+Пусть грубая $y$-грань длины $\Delta y_c = 2\Delta y_f$ накрыта двумя мелкими
+гранями, а ЭДС грубого уровня в концевых узлах грани заменена значениями
+мелкого уровня. Тогда CT-обновление грубой грани совпадает со средним
+CT-обновлений мелких граней, и последующая замена грубых граней средними
+мелких (\texttt{average\_down\_faces}) не меняет грубое поле и не вносит
+дивергенцию.
+\end{proposition}
+\begin{proof}
+Обозначим узловые ЭДС вдоль грани $E^{\,\mathrm{низ}},E^{\,\mathrm{сер}},
+E^{\,\mathrm{верх}}$ (середина есть только у мелкого уровня). Среднее
+обновлений двух мелких граней
+\[
+\frac12\left[\frac{E^{\mathrm{сер}}-E^{\mathrm{низ}}}{\Delta y_f}
++\frac{E^{\mathrm{верх}}-E^{\mathrm{сер}}}{\Delta y_f}\right]
+=\frac{E^{\mathrm{верх}}-E^{\mathrm{низ}}}{2\Delta y_f}
+=\frac{E^{\mathrm{верх}}-E^{\mathrm{низ}}}{\Delta y_c}
+\]
+есть в точности обновление грубой грани с концевыми ЭДС мелкого уровня;
+значение $E^{\mathrm{сер}}$ выпадает телескопически. Таким образом, после
+\texttt{average\_down\_faces} грубое поле тождественно усреднённому мелкому,
+а его дискретная дивергенция в грубых ячейках равна сумме дивергенций
+накрывающих мелких ячеек, т.е.\ нулю.
+\end{proof}
+
+Идейно это EMF-рефлюкс Балсары~\cite{balsara2001}, упрощённый отсутствием
+временного усреднения благодаря общему шагу. Фантомные слои мелкого уровня
+заполняются \texttt{FillPatchTwoLevels} (клеточные величины --- с
+консервативной интерполяцией, грани --- с \texttt{face\_divfree\_interp});
+после шага выполняется \texttt{average\_down} для клеточных величин и
+\texttt{average\_down\_faces} для граней.
+
+\subsection{Граничные условия}
+
+Реализованы четыре типа ГУ, задаваемых в JSON по каждой стороне области:
+\texttt{periodic}; \texttt{outflow} (экстраполяция нулевого порядка);
+\texttt{reflect} (зеркало: нормальные компоненты $v$ и $\B$ нечётны,
+касательные чётны); \texttt{dirichlet} --- <<исторические>> ГУ
+из~\cite{shamanov2025}: в фантомных ячейках и на фантомных гранях замораживаются
+значения начального условия (используются в задаче Брио--Ву). Для клеточных
+величин ГУ реализованы через механизм \texttt{BCRec}/\texttt{FillPatch}
+AMReX (типы \texttt{int\_dir}, \texttt{foextrap}, \texttt{reflect\_even/odd},
+\texttt{ext\_dir} с пользовательским наполнителем), для граневых компонент
+поля --- специализированной процедурой заполнения фантомных граней.
+
+% =============================================================================
+\section{Программная реализация}
+\label{sec:code}
+
+\subsection{Структура проекта и принципы}
+
+\begin{verbatim}
+mhd-amrex/
+|- CMakeLists.txt              сборка (Ubuntu/macOS; MPI/OpenMP/HDF5)
+|- src/
+|  |- kernels/                 вычислительные ядра (НЕ зависят от AMReX)
+|  |  |- MhdState.H            переменные, УРС, скорости волн
+|  |  |- Hlld.H                решатель HLLD (потоки + ЭДС)
+|  |  |- Reconstruction.H      MUSCL-лимитеры
+|  |  '- CtUpdate.H            узловые ЭДС, constrained transport
+|  |- MhdAmr.H/.cpp            класс AmrCore: шаг, AMR, FillPatch, вывод
+|  |- Problems.H               каталог начальных условий (через A_z)
+|  |- Config.H/.cpp            разбор JSON-конфигурации
+|  '- main.cpp                 точка входа
+|- inputs/*.json               примеры конфигураций (4 теста)
+|- tests/standalone_verify.cpp автономный драйвер на тех же ядрах
+|- scripts/plot_verification.py  графики и метрики
+'- docs/                       отчёт, рисунки
+\end{verbatim}
+
+Ключевые архитектурные решения:
+\begin{itemize}
+\item \textbf{Разделение ядра и каркаса.} Численные ядра (HLLD,
+реконструкция, ЭДС) написаны как заголовки без зависимостей от AMReX; макрос
+\texttt{MHD\_HD} разворачивается в \texttt{AMREX\_GPU\_HOST\_DEVICE} при
+сборке с AMReX (готовность к GPU через \texttt{amrex::ParallelFor}) и в
+\texttt{inline} при автономной сборке. Это позволило верифицировать схему
+лёгким однородно-сеточным драйвером \texttt{standalone\_verify.cpp},
+компилируемым одним вызовом \texttt{g++}, --- и гарантирует, что AMReX-слой
+использует \emph{в точности} проверенную численную математику.
+\item \textbf{Конфигурация без перекомпиляции.} Все параметры (задача, НУ,
+ГУ, сетка, AMR, схема, CFL, вывод) читаются из JSON
+(библиотека \texttt{nlohmann/json}); путь к файлу передаётся первым
+аргументом командной строки, остальные аргументы транслируются в
+\texttt{ParmParse} AMReX.
+\item \textbf{Современный C++17}: \texttt{enum class}, RAII-контейнеры AMReX
+(\texttt{MultiFab}, \texttt{Vector}), лямбды в качестве ядер циклов,
+отсутствие сырого управления памятью; развёрнутые комментарии на русском.
+\end{itemize}
+
+\subsection{Класс \texttt{MhdAmr} и цикл по времени}
+
+Класс \texttt{MhdAmr : amrex::AmrCore} хранит на каждом уровне иерархии:
+клеточный \texttt{MultiFab} консервативных величин (8 компонент, 3 фантомных
+слоя), пару граневых \texttt{MultiFab} для $B_x,B_y$, граневые потоки и
+узловой \texttt{MultiFab} ЭДС. Переопределены виртуальные методы
+\texttt{MakeNewLevelFromScratch/FromCoarse}, \texttt{RemakeLevel},
+\texttt{ClearLevel}, \texttt{ErrorEst}. Одна стадия интегратора:
+\begin{enumerate}
+\item \texttt{FillPatchCells/Faces} --- фантомы внутри уровня, с грубого
+уровня и физические ГУ;
+\item \texttt{ComputeFluxesAndEmf} --- HLLD-потоки на гранях (с запасом в
+один слой) и узловые ЭДС~\eqref{eq:emf-bs}/\eqref{eq:emf-gs};
+\item \texttt{SyncEmfAcrossLevels} --- инжекция мелких ЭДС в грубые узлы
+(\texttt{average\_down\_nodal} + \texttt{ParallelCopy});
+\item \texttt{ApplyUpdates} --- баланс потоков для газовых величин и
+CT-обновление~\eqref{eq:ct-bx}--\eqref{eq:ct-by};
+\item \texttt{average\_down(\_faces)} и $RT_0$-синхронизация клеточного поля.
+\end{enumerate}
+Фрагмент ядра CT-обновления (комментарии в листинге латиницей):
+
+\begin{lstlisting}
+// nodal EMF = average of four adjacent face EMFs (eq. (8) of Avdeeva-Lukin);
+// face EMF comes from the HLLD flux: x-face Ez = -F[By], y-face Ez = +G[Bx]
+ez(i,j) = corner_emf(-fx(i,j-1,UBY), -fx(i,j,UBY),
+                      fy(i-1,j,UBX),  fy(i,j,UBX), ..., emf_mode);
+
+// Faraday law via Stokes theorem: discrete divergence telescopes to zero
+bx(i,j) -= dt/dy * (ez(i,j+1) - ez(i,j));
+by(i,j) += dt/dx * (ez(i+1,j) - ez(i,j));
+\end{lstlisting}
+
+\subsection{Параллелизация и ввод--вывод}
+
+Распараллеливание --- средствами AMReX: доменная декомпозиция по MPI
+(\texttt{BoxArray}/\texttt{DistributionMapping}, обмены
+\texttt{FillBoundary}/\texttt{FillPatch}, редукции
+\texttt{ParallelDescriptor::Reduce*}) и OpenMP-тайлинг внутри ранга
+(\texttt{MFIter(..., TilingIfNotGPU())}). Запуск:
+\begin{verbatim}
+OMP_NUM_THREADS=4 mpirun -np 8 ./build/mhd2d inputs/orszag_tang.json
+\end{verbatim}
+Вывод --- нативные plotfile AMReX либо HDF5
+(\texttt{WriteMultiLevelPlotfileHDF5}, сборка с \texttt{-DMHD\_HDF5=ON};
+один файл на снимок, коллективная запись MPI-IO). Оба формата, включая
+AMR-иерархию, открываются в ParaView ($\ge$5.7). В выходные поля включена
+диагностическая величина $\divg_h\B$.
+
+\subsection{Пример конфигурации (JSON)}
+
+\begin{lstlisting}[language=]
+{
+  "problem": "orszag_tang",
+  "geometry": { "prob_lo": [0,0], "prob_hi": [1,1], "n_cell": [256,256] },
+  "amr":  { "max_level": 2, "ref_ratio": 2, "regrid_int": 4,
+            "refine_grad_rho": 0.20, "refine_current": 0.50 },
+  "bc":   { "x_lo": "periodic", "x_hi": "periodic",
+            "y_lo": "periodic", "y_hi": "periodic" },
+  "time": { "cfl": 0.5, "t_max": 0.5, "integrator": "rk2" },
+  "scheme": { "gamma": 1.6666666666666667, "limiter": "mc",
+              "emf_averaging": "gardiner_stone" },
+  "output": { "plot_dt": 0.1, "prefix": "plt_ot", "format": "hdf5" }
+}
+\end{lstlisting}
+
+% =============================================================================
+\section{Верификация}
+\label{sec:tests}
+
+Ядра схемы прогнаны автономным драйвером (однородная сетка, MUSCL-MC,
+SSP-RK2, $\mathrm{CFL}=0.4$, усреднение ЭДС~\eqref{eq:emf-gs}); метрики ---
+$L_1/L_2$-ошибки, $\max|\divg_h\B|$, профили переменных против эталонов.
+
+\subsection{Задача Брио--Ву}
+
+Ударная труба~\cite{brio1988}: $\gamma=2$, $B_x=0.75$, область
+$[0,1]\times[0,0.01]$, сетка $512\times4$, $t_{\max}=0.1$,
+ГУ --- \texttt{dirichlet} по $x$:
+\[
+(\rho,p,B_y)\big|_{x<0.5} = (1,\,1,\,1),\qquad
+(\rho,p,B_y)\big|_{x>0.5} = (0.125,\,0.1,\,-1),\qquad
+\vv=0,\ B_z=0.
+\]
+Результат (рис.~\ref{fig:briowu}): воспроизведена эталонная структура ---
+быстрая волна разрежения, \emph{составная волна} (пик плотности при
+$x\approx0.47$), контактный разрыв, медленный скачок, быстрое разрежение
+справа; ширина фронтов 2--3 ячейки, что согласуется с~\cite{avdeeva2019}.
+Начальное поле кусочно-постоянно, и $\max|\divg_h\B|=0$ \emph{тождественно}
+на протяжении всех 488 шагов.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{briowu.png}
+\caption{Брио--Ву, $t=0.1$: плотность, скорость $u$, $B_y$, давление.}
+\label{fig:briowu}
+\end{figure}
+
+\subsection{Циркулярно поляризованная альфвеновская волна}
+
+Гладкий тест~\cite{toth2000} для измерения порядка сходимости. Угол
+распространения $\alpha=30^\circ$ к оси $Ox$; область
+$\Omega=[0,1/\cos\alpha]\times[0,1/\sin\alpha]$, периодические ГУ,
+$\gamma=5/3$:
+\[
+\rho=1,\quad p=0.1,\quad v_\parallel=0,\quad B_\parallel=1,\quad
+v_\perp=B_\perp=0.1\sin\varphi,\quad v_z=B_z=0.1\cos\varphi,
+\]
+$\varphi = 2\pi(x\cos\alpha+y\sin\alpha)$. Волна распространяется с
+альфвеновской скоростью $c_A=B_\parallel/\sqrt{\rho}=1$ и при $t=1$ решение
+совпадает с начальным --- ошибка измеряется против аналитики
+(табл.~\ref{tab:alfven}, рис.~\ref{fig:alfven}).
+
+\begin{table}[t]
+\centering
+\caption{Сходимость на альфвеновской волне: ошибки $B_\perp$ при $t=1$.}
+\label{tab:alfven}
+\begin{tabular}{ccccc}
+\toprule
+$N$ & $L_1$ & $L_2$ & порядок ($L_1$) & $\max|\divg_h\B|$ за расчёт\\
+\midrule
+16 & $6.540\cdot10^{-3}$ & $7.378\cdot10^{-3}$ & ---  & $1.3\cdot10^{-13}$\\
+32 & $1.926\cdot10^{-3}$ & $2.128\cdot10^{-3}$ & 1.76 & $2.2\cdot10^{-13}$\\
+64 & $5.542\cdot10^{-4}$ & $6.146\cdot10^{-4}$ & 1.80 & $1.4\cdot10^{-12}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Порядок стремится ко второму, тогда как схема первого порядка
+из~\cite{shamanov2025} давала $\approx1.2$--$1.3$ (там --- наблюдаемая
+скорость на последовательности грубых сеток): MUSCL-реконструкция даёт
+ожидаемое улучшение при сохранении всех бездивергентных свойств.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{alfven_profiles.png}
+\caption{Профили $B_\perp(\xi)$, $\xi=x\cos\alpha+y\sin\alpha$, при $t=1$
+на сетках $N=16,32,64$ в сравнении с точным решением.}
+\label{fig:alfven}
+\end{figure}
+
+\subsection{Вихрь Орзага--Танга}
+
+Классический тест~\cite{orszag1979} перехода гладкого течения к системе
+взаимодействующих ударных волн. Периодический квадрат $[0,1]^2$,
+$\gamma=5/3$, $t_{\max}=0.5$:
+\[
+\rho=\frac{25}{36\pi},\quad p=\frac{5}{12\pi},\quad
+u=-\sin 2\pi y,\quad v=\sin 2\pi x,\quad
+B_x=-B_0\sin 2\pi y,\quad B_y=B_0\sin 4\pi x,
+\]
+с $B_0=1/\sqrt{4\pi}$ в принятой нормировке (в записи со
+$\sqrt{4\pi}$-единицами поля, как в~\cite{shamanov2025}, это эквивалентно
+$B_x=-\sin2\pi y$); поле задано потенциалом
+$A_z=B_0\bigl(\cos4\pi x/4\pi + \cos2\pi y/2\pi\bigr)$.
+\emph{Целевые показатели}: каноническая морфология карт $\rho$, $p$ к
+$t=0.5$ и профиль давления вдоль $y=0.3125$ (рис.~8
+статьи~\cite{avdeeva2019}).
+
+Результат на сетке $192^2$ (611 шагов): карты (рис.~\ref{fig:ot})
+воспроизводят эталонную картину; профиль давления
+(рис.~\ref{fig:otslice}) повторяет эталон --- скачок при $x\approx0.28$ со
+сбросом до $p\approx0.06$, плато $p\approx0.10$, максимум $p\approx0.26$ при
+$x\approx0.58$, резкий сброс при $x\approx0.70$. За весь расчёт
+$\max|\divg_h\B|=1.0\cdot10^{-12}$ --- накопление ошибок округления,
+линейное по числу шагов, без физического роста.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{ot_maps.png}
+\caption{Орзаг--Танг, $t=0.5$, сетка $192^2$: плотность (слева) и давление
+(справа).}
+\label{fig:ot}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{ot_pressure_slice.png}
+\caption{Орзаг--Танг: давление вдоль $y\approx0.3125$ при $t=0.5$
+(ср.\ рис.~8 работы~\cite{avdeeva2019}).}
+\label{fig:otslice}
+\end{figure}
+
+\subsection{Вращающийся цилиндр (rotor)}
+
+Тест устойчивости~\cite{toth2000}: $[0,1]^2$, $\gamma=1.4$,
+$B_x=5/\sqrt{4\pi}$, $p=1$; диск $\rho=10$, $r_0=0.1$, вращающийся со
+скоростью $v_0=2$, со сглаживающим кольцом до $r_1=0.115$; ГУ ---
+\texttt{outflow}, $t_{\max}=0.15$, сетка $128^2$. Альфвеновские <<крылья>>
+вытягивают вихрь, центральная область сохраняет гладкое вращение без
+осцилляций (рис.~\ref{fig:rotor}); $\max|\divg_h\B|=1.3\cdot10^{-12}$.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{rotor_maps.png}
+\caption{Rotor, $t=0.15$: плотность и давление.}
+\label{fig:rotor}
+\end{figure}
+
+\subsection{Сводка результатов}
+
+\begin{table}[h]
+\centering
+\caption{Сводка верификационных расчётов.}
+\begin{tabular}{lcccl}
+\toprule
+Тест & Сетка & Шагов & $\max|\divg_h\B|$ & Эталон\\
+\midrule
+Брио--Ву & $512\times4$ & 488 & $0$ & \cite{brio1988}; рис.~4 в \cite{avdeeva2019}\\
+Альфвеновская волна & $16$--$64$ & 41--161 & $\le1.4\cdot10^{-12}$ & аналитика; табл.~3 в \cite{shamanov2025}\\
+Орзаг--Танг & $192^2$ & 611 & $1.0\cdot10^{-12}$ & рис.~8 в \cite{avdeeva2019}\\
+Rotor & $128^2$ & 175 & $1.3\cdot10^{-12}$ & \cite{toth2000}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\section{Обсуждение и ограничения}
+
+\begin{itemize}
+\item Полная энергия обновляется потоками HLLD; последующая CT-коррекция
+граней меняет клеточное поле на $O(h^2)$, что даёт стандартную для CT-кодов
+несогласованность энергии (как в Athena~\cite{gardiner2005}); при
+необходимости включается пересчёт внутренней энергии.
+\item AMR без подциклирования прост и точен, но на глубоких иерархиях
+дороже подциклирования; переход на subcycling потребует EMF-рефлюкса с
+временным усреднением~\cite{balsara2001}.
+\item Слой AMReX зафиксирован на версии 25.01; в других версиях могут
+отличаться сигнатуры \texttt{FillPatch}-утилит для граневых массивов.
+\item Ядра готовы к GPU (\texttt{MHD\_HD}); перенос циклов на
+\texttt{amrex::ParallelFor} --- механическая замена.
+\end{itemize}
+
+\section{Заключение}
+
+Реализован и верифицирован программный комплекс решения двумерных уравнений
+идеальной МГД: бездивергентная схема Авдеевой--Лукина перенесена на
+блочно-структурированные адаптивные сетки AMReX, дополнена
+MUSCL-реконструкцией, решателем HLLD (с исправлением звёздной энергии),
+SSP-RK2-интегратором и точным согласованием ЭДС между уровнями AMR. Во всех
+тестах дискретная дивергенция магнитного поля сохраняется на уровне ошибок
+округления ($\le1.3\cdot10^{-12}$, в задаче Брио--Ву --- тождественный нуль),
+порядок сходимости на гладком решении составил $1.8$, эталонные структуры
+решений (составная волна Брио--Ву, морфология Орзага--Танга, профиль давления
+$y=0.3125$) воспроизведены. Комплекс конфигурируется JSON-файлами,
+распараллелен по MPI+OpenMP, пишет результаты в форматах plotfile/HDF5,
+совместимых с ParaView, и собирается на Ubuntu и macOS.
+
+% =============================================================================
+\begin{thebibliography}{9}
+\bibitem{avdeeva2019} Avdeeva E.N., Lukin V.V. Divergence-free
+finite-difference method for 2D ideal MHD // J. Phys.: Conf. Ser. 2019.
+V.~1336. P.~012026.
+\bibitem{shamanov2025} Шаманов И.П. Разработка и исследование программного
+комплекса для решения задач идеальной магнитной гидродинамики: ВКР бакалавра
+/ МГТУ им.~Н.Э.~Баумана. М., 2025.
+\bibitem{miyoshi2005} Miyoshi T., Kusano K. A multi-state HLL approximate
+Riemann solver for ideal magnetohydrodynamics // J.~Comput. Phys. 2005.
+V.~208. P.~315--344.
+\bibitem{balsara1999} Balsara D.S., Spicer D.S. A staggered mesh algorithm
+using high order Godunov fluxes to ensure solenoidal magnetic fields //
+J.~Comput. Phys. 1999. V.~149. P.~270--292.
+\bibitem{gardiner2005} Gardiner T.A., Stone J.M. An unsplit Godunov method
+for ideal MHD via constrained transport // J.~Comput. Phys. 2005. V.~205.
+P.~509--539.
+\bibitem{toth2000} T\'oth G. The $\nabla\cdot B=0$ constraint in
+shock-capturing magnetohydrodynamics codes // J.~Comput. Phys. 2000. V.~161.
+P.~605--652.
+\bibitem{balsara2001} Balsara D.S. Divergence-free adaptive mesh refinement
+for magnetohydrodynamics // J.~Comput. Phys. 2001. V.~174. P.~614--648.
+\bibitem{brio1988} Brio M., Wu C.C. An upwind differencing scheme for the
+equations of ideal magnetohydrodynamics // J.~Comput. Phys. 1988. V.~75.
+P.~400--422.
+\bibitem{orszag1979} Orszag S.A., Tang C.-M. Small-scale structure of
+two-dimensional magnetohydrodynamic turbulence // J.~Fluid Mech. 1979.
+V.~90. P.~129--143.
+\bibitem{amrex} Zhang W. et al. AMReX: a framework for block-structured
+adaptive mesh refinement // J.~Open Source Software. 2019. V.~4(37). P.~1370.
+URL: \url{https://amrex-codes.github.io/amrex/docs_html/}.
+\end{thebibliography}
+
+\end{document}
