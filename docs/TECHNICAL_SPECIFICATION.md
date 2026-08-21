@@ -83,12 +83,13 @@ CT обновляет `Bx/By` дискретным законом Фарадея
    CTest отсутствует; параметры uniform driver захардкожены; нет machine-readable
    метрик, provenance, strong/weak scaling scripts и статистики повторов.
 
-4. **Legacy-код найден, но его запуск пока невоспроизводим.**
+4. **Legacy-код и внешний архив найдены, но exact run пока невоспроизводим.**
    Зафиксирован `MHD2D` commit
-   `9d0f60ea8576fac5d6f28c4dec142236d76131d6`, однако в Git нет требуемых
-   `InputData/solverConfig.json` и `InputData/mesh.txt`. Локальная сборка на
-   AppleClang останавливается на безусловном `omp.h`. Подробности и данные ВКР
-   находятся в [аудите legacy-базы](LEGACY_BASELINE.md).
+   `9d0f60ea8576fac5d6f28c4dec142236d76131d6`. Inputs, Netgen mesher и 60 GB
+   результатов найдены на `/Volumes/Elements`, но лежат в иных dirty snapshots
+   без run manifest. Локальная сборка baseline на AppleClang останавливается
+   на `omp.h`. См. [аудит](LEGACY_BASELINE.md) и
+   [external manifest](EXTERNAL_DATA_MANIFEST.md).
 
 ### 3.2. Высокие (P1)
 
@@ -327,10 +328,11 @@ Uniform grid, `t=0.1`, `gamma=2`, `Bx=0.75`, одни и те же НУ/ГУ:
 - ВКР `VKRB_Shamanov_FINITE.pdf`, SHA-256
   `bc5b2661fd65c8ac94f2a02e0236978515af8263da86c857d1a6efb9bea67645`;
 - полный технический аудит: `docs/LEGACY_BASELINE.md`.
+- внешний data/source manifest: `docs/EXTERNAL_DATA_MANIFEST.md`.
 
-Перед запуском требуется подтвердить commit и восстановить отсутствующие в Git
-legacy input/mesh. Оригинальный снимок не модифицировать; build fixes, adapters
-и neutral cases хранить отдельно в `mhd-amrex`.
+Перед запуском требуется сопоставить найденные external input/mesh/result с
+конкретным commit и case. Оригинальные snapshots не модифицировать; build
+fixes, adapters и neutral cases хранить отдельно в `mhd-amrex`.
 
 #### WP3.2. Нормализация
 
@@ -774,8 +776,8 @@ claims до G3. GPU speedup не публиковать до parity tests G6.
 
 ## 11. Данные, которые нужно получить от владельца сейчас
 
-1. Подтверждение legacy commit `9d0f60e…` и отсутствующие в нём
-   `InputData/solverConfig.json`, `InputData/mesh.txt`/генератор сетки.
+1. Подтверждение legacy commit `9d0f60e…` и точное соответствие найденных на
+   `Elements` input/mesh/result конкретным запускам ВКР.
 2. Точное название или файл статьи Бисикало–Жилкина.
 3. Какой именно график/переменная названы заказчиком «немонотонными».
 4. Требуемая ветвь/эталон Brio–Wu, если она задана руководителем.

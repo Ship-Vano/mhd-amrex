@@ -19,7 +19,8 @@
 Подробное описание схемы, тестов и результатов — в `docs/REPORT.md`.
 План завершения, критерии приёмки и протоколы сравнения/benchmark — в
 `docs/TECHNICAL_SPECIFICATION.md`; аудит прежнего решателя и ВКР — в
-`docs/LEGACY_BASELINE.md`; правила работы AI-агентов — в `AGENTS.md`.
+`docs/LEGACY_BASELINE.md`, внешний архив — в
+`docs/EXTERNAL_DATA_MANIFEST.md`; правила работы AI-агентов — в `AGENTS.md`.
 
 ## Структура проекта
 
