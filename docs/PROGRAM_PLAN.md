@@ -1,6 +1,6 @@
 # MHD-DUAL: план работ и системное техническое задание
 
-Статус: базовый проект ТЗ, 2026-08-21.
+Статус: базовый проект ТЗ, уточнён 2026-08-26.
 
 Продукты: `mhd2d_legacy`, `mhd2d_amrex`.
 
@@ -24,6 +24,27 @@
 Готовность определяется воспроизводимой сборкой, автоматическими тестами,
 численными критериями и сырыми измерениями, а не только графиками решения.
 
+### 1.1. Исследовательская гипотеза
+
+Основная гипотеза H1: для выбранного класса 2D ideal-MHD задач реализация на
+AMReX с MUSCL, SSP-RK2, CT и корректным AMR способна дать более выгодное
+соотношение «ошибка — время — память», чем legacy finite-volume solver первого
+порядка на неструктурированной сетке.
+
+H1 не считается истинной заранее. Она проверяется в режимах equal resolution,
+equal cost и equal error. Допустимым научным результатом является также
+частичное или полное опровержение: например, AMR выигрывает на локализованных
+структурах, но проигрывает на гладкой глобальной волне из-за overhead. В отчёте
+запрещено заменять такую проверку фразой «AMReX быстрее и точнее» без данных.
+
+### 1.2. Ближайший результат для научного руководителя
+
+Первый пользовательский deliverable — исправленная сокращённая
+расчётно-пояснительная записка НИРС для МГТУ им. Н. Э. Баумана. Она должна
+честно описывать состояние «solver работает, доказательная база ещё строится»,
+не заявлять гарантированную бездивергентность/AMR-консервативность/GPU-порт до
+соответствующих gates и отделять измеренные результаты от плана продолжения.
+
 ## 2. Границы проекта
 
 В scope входят восстановление ВКР и mesh pipeline, исправление известных
@@ -35,6 +56,11 @@
 MPI-порт legacy и принципиальная замена HLLD. MPI и масштабируемый multi-GPU —
 обязанность AMReX-продукта. Архивные VTU/plotfile размером в десятки гигабайт
 не включаются в Git: сохраняются manifest, checksum и компактные срезы.
+
+Полная реализация discontinuous Galerkin (DG) также не входит в текущую фазу.
+Входит архитектурный задел: границы модулей, контракты состояния/потока/
+граничных условий/интегратора, ADR и тесты, не позволяющие FV-реализации
+монопольно определять всю кодовую базу.
 
 Ключевые правила:
 
@@ -90,6 +116,32 @@ EMF и Raviart–Thomas-реконструкцию магнитного поля
 вычисление ошибок/TV/front metrics/балансов, benchmark runner и путь данных
 `raw -> summary -> figures -> report`. Его schema не зависит от типов AMReX.
 
+### 3.4. Будущее расширение — DG для 2D MHD
+
+DG планируется как новый spatial discretization того же физического ядра, а не
+как набор `if (dg)` внутри FV/AMR-кода. Целевая декомпозиция:
+
+```text
+physics (EOS, state, flux, waves)
+        ↓
+spatial operator contract ── FV operator
+        │                    DG operator (future)
+        ↓
+time integrator (Euler / SSP-RK)
+        ↓
+mesh/backend services (AMReX hierarchy, parallel execution)
+        ↓
+diagnostics / I/O / V&V
+```
+
+Повторно используются только математически общие части: state layout,
+primitive/conservative conversion, physical flux, wave-speed estimates,
+boundary-state policy, time-step orchestration, diagnostics и case schema.
+FV reconstruction/CT update и будущие DG basis/quadrature/volume/surface
+operators остаются раздельными. Для divergence control DG требуется отдельное
+численное решение; текущий staggered CT нельзя объявлять автоматически
+пригодным для DG.
+
 ## 4. Функциональные требования
 
 ### 4.1. Общие
@@ -103,6 +155,8 @@ EMF и Raviart–Thomas-реконструкцию магнитного поля
 | SYS-005 | Output содержит физическое время и однозначные имена/единицы полей. |
 | SYS-006 | Diagnostic, plot и benchmark I/O управляются независимо. |
 | SYS-007 | Case, mesh и reference имеют version/checksum. |
+| SYS-008 | Научные утверждения в отчёте трассируются до requirement, test, raw artifact и commit. |
+| SYS-009 | Physics kernels не зависят от конкретного spatial discretization и orchestration AMReX, кроме явно документированных adapters. |
 
 ### 4.2. Legacy
 
@@ -149,6 +203,21 @@ EMF и Raviart–Thomas-реконструкцию магнитного поля
 | CMP-006 | Ablation нового кода: first order; MUSCL; MUSCL+SSP-RK2; полный CT. |
 | CMP-007 | Качество публикуется вместе с wall time, cell/element updates/s и memory footprint. |
 | CMP-008 | Интерполяция между сетками консервативна либо её ошибка оценена отдельно. |
+
+### 4.5. Требования к отчёту и развитию DG
+
+| ID | Требование |
+|---|---|
+| RPT-001 | `docs/report.tex` является основной РПЗ НИРС; Markdown-версия не противоречит ей. |
+| RPT-002 | В отчёте разделены «реализовано», «проверено», «измерено», «гипотеза» и «план». |
+| RPT-003 | Заголовок, аннотация и выводы не утверждают гарантию `div B`, консервативность AMR, готовность GPU-порта или ускорение без пройденного gate. |
+| RPT-004 | Каждая таблица/рисунок имеет case ID, mesh/resolution, physical time, solver profile и источник данных. |
+| RPT-005 | Структура РПЗ: постановка; методы legacy/new; методика V&V; текущие результаты; ограничения; план AMR/GPU; выводы. |
+| EXT-001 | Добавить ADR с границами physics, spatial operator, time integration, mesh/backend и diagnostics. |
+| EXT-002 | FV остаётся отдельной реализацией spatial operator; DG не добавляется условными ветками в FV kernels. |
+| EXT-003 | Общий state/flux API покрывается unit tests до рефакторинга под DG. |
+| EXT-004 | Любой подготовительный рефакторинг сохраняет численный FV regression baseline. |
+| EXT-005 | Реализация DG начинается только с отдельного ТЗ: basis/quadrature, numerical flux, limiter/positivity, divergence control, CFL и convergence suite. |
 
 ## 5. Нефункциональные требования
 
@@ -232,6 +301,14 @@ Shared contract допустимо хранить в `mhd-amrex`, но без з
 generator; зафиксировать commits нового кода/AMReX; утвердить canonical test
 cards, Brio reference, hardware matrix и requirements-to-test traceability.
 
+### R0 — исправление отчёта для научного руководителя
+
+Провести claim audit `REPORT.md`/`report.tex`; убрать или маркировать
+неподтверждённые гарантии; описать legacy и новую схему, текущий evidence и
+ограничения; добавить программу экспериментов и гипотезу H1; привести документ
+к сокращённой структуре РПЗ НИРС. Текущие диагностические числа пометить как
+не-benchmark. Выход: компилируемый draft PDF и таблица claim-to-evidence.
+
 ### L0 — восстановление legacy
 
 Очистить сборку без изменения математики, восстановить Netgen pipeline,
@@ -260,6 +337,9 @@ persistent allocations, resident hot path и минимальные host round t
 
 Стабилизировать build matrix, добавить CTest, manifests, timing regions и
 контроль output schedule. Выход: воспроизводимый CPU release.
+
+В рамках N0 также создать минимальный ADR модульных границ для будущего DG.
+Не выполнять большой рефакторинг до появления regression baseline.
 
 ### N1 — uniform-grid корректность
 
@@ -297,14 +377,16 @@ equal-resolution, equal-cost, equal-error comparison; затем кластер�
 
 ```text
 P0
+├─ R0 draft -------------------------------> C2 final report
 ├─ L0 -> L1 -> L2 -> L3 ─┐
-├─ N0 -> N1 -> N2 -> N3 -> N4 -> N5
+├─ N0 + DG ADR -> N1 -> N2 -> N3 -> N4 -> N5
 └─ C0 --------------------┴-> C1 -> C2
 ```
 
 | Gate | Условие |
 |---|---|
 | G-P0 | Утверждены commits, test cards, reference и hardware plan. |
+| G-R0 | РПЗ собирается; все claims классифицированы, неподтверждённые гарантии удалены. |
 | G-L0 | `legacy_vkr` clean-build и минимум три воспроизведённых теста ВКР. |
 | G-L1 | Corrected suite проходит; numerical deltas перечислены. |
 | G-L2 | CPU optimization проходит parity и даёт статистически значимый эффект. |
@@ -317,6 +399,7 @@ P0
 | G-N5 | CUDA regression/profiling gates выполнены. |
 | G-C1 | Завершены три режима прямого сравнения. |
 | G-C2 | Cluster raw data проверены; отчёт генерируется автоматически. |
+| G-EXT0 | ADR для FV/DG-расширения принят; текущий FV regression не изменён. |
 
 ## 11. Трудоёмкость и команда
 
@@ -352,6 +435,8 @@ acceptance gate. Один интегратор согласует формулы
 | Нет AMR reflux | G-N3 блокирует claims о global conservation |
 | CPU loops в CUDA build | Device coverage audit + profiler evidence |
 | Несопоставимые сетки/стоимость | Три режима сравнения + явная мера `h` |
+| Подтверждение желаемой гипотезы подменяет исследование | H1 имеет falsification criteria; публикуются и отрицательные результаты |
+| Преждевременный DG-рефакторинг ломает FV | Сначала tests/ADR; DG — отдельное ТЗ и change stream |
 | Архив ~60 GB без provenance | Только forensic data; новые runs с manifests |
 | Нет кластера | Заранее job scripts; G-C2 остаётся открытым |
 
@@ -374,7 +459,8 @@ traceability matrix, reproduction/verification/performance/final reports.
 7. завершены equal-resolution/cost/error comparisons;
 8. scaling содержит raw runs, статистику и environment data;
 9. каждый вывод отчёта трассируется до конфигурации и данных;
-10. нет заявлений «реализовано/ускорено/точнее» без прошедшего gate.
+10. нет заявлений «реализовано/ускорено/точнее» без прошедшего gate;
+11. принят ADR расширения FV/DG, не изменивший текущий FV regression baseline.
 
 ## 14. Внешние решения до финальной приёмки
 
@@ -385,6 +471,8 @@ traceability matrix, reproduction/verification/performance/final reports.
 - предоставить cluster scheduler/account/partition/modules и hardware;
 - определить GPU architectures и допустимые CUDA/MPI versions;
 - определить права публикации исходников и результатов ВКР.
+- предоставить шаблон/методические требования кафедры к РПЗ НИРС, если они
+  обязательны; до этого используется сокращённая инженерно-научная структура.
 
 До получения этих данных можно готовить код, тесты и job scripts, но нельзя
 заполнять итоговые comparative/scaling tables предполагаемыми числами.
