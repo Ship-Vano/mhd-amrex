@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "phase": "T03",
+  "profile": "legacy_vkr",
+  "source": {
+    "official_commit": "9d0f60ea8576fac5d6f28c4dec142236d76131d6",
+    "archive_sha256": "afb51261d3d3b36760573afa4a12e7567d49bcfdc3b15c504ec9604df15ff440",
+    "source_dirty": false
+  },
+  "toolchain": {
+    "compiler": "GNU 15.2.0",
+    "openmp": "4.5",
+    "build_type": "Release"
+  },
+  "runs": [
+    {
+      "case": "brio_wu",
+      "raw_artifact": "benchmarks/raw/legacy_vkr/brio_wu_n128x4_v1",
+      "mesh_sha256": "becc85d324c871f7dd342b9708bb9038ca4e31203130e0ddad358f0fb596afad",
+      "configured_final_time": 0.1,
+      "reported_final_time": 0.007406013972,
+      "iterations": 68,
+      "reached_target": false,
+      "finite": false,
+      "rho_min": -0.176755,
+      "pressure_min": -0.07329236228199998,
+      "console_sha256": "90be4fe8d8b987a1199282c52e53d2c23dddf37de4ecd330f39070d05ab02436"
+    },
+    {
+      "case": "cp_alfven",
+      "raw_artifact": "benchmarks/raw/legacy_vkr/cp_alfven_n32x56_v1",
+      "mesh_sha256": "a14da1df950115d70eba0142b320e8841ac202f1ea1fbf140bf4da56177e0dc9",
+      "configured_final_time": 1.0,
+      "reported_final_time": 0.003143912188,
+      "iterations": 0,
+      "reached_target": false,
+      "finite": false,
+      "console_sha256": "f95042c77bc52a19b9991d7b3fe766c09109c91d30f6a5707d190677459f7641"
+    },
+    {
+      "case": "magnetic_loop",
+      "raw_artifact": "benchmarks/raw/legacy_vkr/magnetic_loop_n64x32_v1",
+      "mesh_sha256": "d9945e273d071e1f0f35d8f51013258455a7d9d7bdc0803a4ff2fffeda25656d",
+      "configured_final_time": 2.0,
+      "reported_final_time": 0.0008860063359,
+      "iterations": 0,
+      "reached_target": false,
+      "finite": false,
+      "console_sha256": "a13d9382392583863dfa0d51c75b9af89814f4ce2865f3e888b3483a3d15b882"
+    }
+  ],
+  "status": "FAILED",
+  "reason": "No canonical controlled case reaches its configured physical time with finite state. This is a numerical baseline result, not a comparison to VCR figures."
+}

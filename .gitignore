@@ -21,6 +21,7 @@
 /*.vtk
 /*.vtu
 /results/
+/benchmarks/raw/
 
 # Generated verification artifacts (canonical report figures live in docs/figures)
 /out_*.csv
