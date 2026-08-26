@@ -8,6 +8,9 @@
 
 Аудит старого кода: [`LEGACY_BASELINE.md`](LEGACY_BASELINE.md).
 
+Фазовый план для Terra Ultra:
+[`TERRA_EXECUTION_PLAN.md`](TERRA_EXECUTION_PLAN.md).
+
 ## 1. Цель и результат программы
 
 Нужно поставить не один экспериментальный код, а два независимо собираемых и

@@ -19,6 +19,7 @@
 Подробное описание схемы, тестов и результатов — в `docs/REPORT.md`.
 Системный план двух продуктов — в `docs/PROGRAM_PLAN.md`; детальные численные
 критерии и протоколы сравнения/benchmark — в `docs/TECHNICAL_SPECIFICATION.md`;
+пошаговые задания для Terra Ultra — в `docs/TERRA_EXECUTION_PLAN.md`;
 аудит прежнего решателя и ВКР — в
 `docs/LEGACY_BASELINE.md`, внешний архив — в
 `docs/EXTERNAL_DATA_MANIFEST.md`; правила работы AI-агентов — в `AGENTS.md`.
