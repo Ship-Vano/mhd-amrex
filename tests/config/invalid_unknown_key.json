@@ -1,0 +1,4 @@
+{
+  "problem": "brio_wu",
+  "geometry": { "prob_lo": [0.0, 0.0], "prob_hi": [1.0, 0.01], "n_cell": [16, 4], "typo_cells": 7 }
+}

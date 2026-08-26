@@ -769,12 +769,13 @@ void MhdAmr::InitData()
 {
     InitFromScratch(0.0);    // строит иерархию: MakeNewLevelFromScratch + ErrorEst
     AverageDownAll();
-    WritePlotFile(0, 0.0);
+    if (cfg_.write_plotfiles) WritePlotFile(0, 0.0);
 }
 
 void MhdAmr::Evolve()
 {
     Real next_plot_t = (cfg_.plot_dt > 0) ? cfg_.plot_dt : -1.0;
+    int last_plot_step = -1;
 
     while (t_ < cfg_.t_max && step_ < cfg_.max_steps) {
         if (max_level > 0 && cfg_.regrid_int > 0 &&
@@ -796,12 +797,13 @@ void MhdAmr::Evolve()
         const bool plot_now =
             (cfg_.plot_int > 0 && step_ % cfg_.plot_int == 0) ||
             (cfg_.plot_dt > 0 && t_ >= next_plot_t - 1e-14);
-        if (plot_now) {
+        if (cfg_.write_plotfiles && plot_now) {
             WritePlotFile(step_, t_);
+            last_plot_step = step_;
             if (cfg_.plot_dt > 0) next_plot_t += cfg_.plot_dt;
         }
     }
-    WritePlotFile(step_, t_);
+    if (cfg_.write_plotfiles && last_plot_step != step_) WritePlotFile(step_, t_);
     amrex::Print() << "Evolve finished: " << step_ << " steps, t=" << t_ << "\n";
 }
 

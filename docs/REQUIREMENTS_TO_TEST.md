@@ -5,9 +5,9 @@
 
 | ID | Требование | Проверка / будущий артефакт | Статус на T00 | Фаза |
 |---|---|---|---|---|
-| ENG-001 | clean configure/build | CMake preset `release` | manual smoke only | T02 |
-| ENG-002 | reproducible regression | CTest: standalone Brio--Wu, Alfvén, config validation | absent | T02 |
-| CFG-001 | strict JSON schema | valid and intentionally invalid JSON CTests | absent | T02 |
+| ENG-001 | clean configure/build | CMake preset `release` | implemented in T02 | T02 |
+| ENG-002 | reproducible regression | CTest: kernel unit, standalone Brio--Wu/Alfvén, config validation and manifest repeat | implemented in T02; numerical scope remains limited | T02 |
+| CFG-001 | strict JSON schema | valid and intentionally invalid JSON CTests | implemented in T02 | T02 |
 | NUM-001 | primitive/conservative states | unit tests including invalid states | planned | T04 |
 | NUM-002 | HLLD consistency and degeneracies | unit/regression tests with branch coverage | planned | T04 |
 | NUM-003 | positivity observable and fallback | counters + failure diagnostics | planned | T04 |

@@ -61,6 +61,7 @@ struct SimConfig {
     std::string output_dir  = ".";  // директория для plotfile'ов
     OutputFormat format = OutputFormat::Native;
     int diag_int = 10;            // период печати div B / минимумов
+    bool write_plotfiles = true;  // false: compute-only / benchmark mode
 
     static SimConfig from_json_file(const std::string& path);
     double param(const std::string& key, double def) const {

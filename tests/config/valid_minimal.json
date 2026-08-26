@@ -1,0 +1,8 @@
+{
+  "problem": "brio_wu",
+  "geometry": { "prob_lo": [0.0, 0.0], "prob_hi": [1.0, 0.01], "n_cell": [16, 4] },
+  "bc": { "x_lo": "dirichlet", "x_hi": "dirichlet", "y_lo": "periodic", "y_hi": "periodic" },
+  "time": { "cfl": 0.4, "t_max": 0.01, "integrator": "rk2" },
+  "scheme": { "gamma": 2.0, "limiter": "mc", "emf_averaging": "gardiner_stone" },
+  "output": { "write_plotfiles": false, "diag_int": 1 }
+}

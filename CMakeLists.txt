@@ -20,6 +20,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(mhd2d CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
@@ -86,8 +88,45 @@ endif()
 add_executable(mhd2d_verify tests/standalone_verify.cpp)
 target_include_directories(mhd2d_verify PRIVATE src/kernels)
 
+add_executable(mhd2d_kernel_unit tests/kernel_unit.cpp)
+target_include_directories(mhd2d_kernel_unit PRIVATE src/kernels)
+
+# Разбор конфигурации изолирован от AMReX, поэтому schema errors проверяются
+# быстро и до выделения mesh/field data.
+add_executable(mhd2d_config_validate
+  tests/config_validate.cpp
+  src/Config.cpp
+)
+target_include_directories(mhd2d_config_validate PRIVATE src)
+target_link_libraries(mhd2d_config_validate PRIVATE nlohmann_json::nlohmann_json)
+
 # --- предупреждения --------------------------------------------------------------
-foreach(tgt mhd2d mhd2d_verify)
+foreach(tgt mhd2d mhd2d_verify mhd2d_kernel_unit mhd2d_config_validate)
   target_compile_options(${tgt} PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra>)
 endforeach()
+
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+  add_test(NAME kernel.unit COMMAND mhd2d_kernel_unit)
+  add_test(NAME standalone.briowu
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_verify.py
+                   --executable $<TARGET_FILE:mhd2d_verify> --case briowu)
+  add_test(NAME standalone.alfven32
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_verify.py
+                   --executable $<TARGET_FILE:mhd2d_verify> --case alfven --resolution 32)
+  add_test(NAME config.valid
+           COMMAND mhd2d_config_validate ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  add_test(NAME config.rejects_unknown_key
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_config_rejected.py
+                   --executable $<TARGET_FILE:mhd2d_config_validate>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
+  add_test(NAME solver.compute_only
+           COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  add_test(NAME manifest.repeatable
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_manifest_repeat.py
+                   --runner ${CMAKE_CURRENT_SOURCE_DIR}/scripts/write_run_manifest.py
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json
+                   --out-dir ${CMAKE_CURRENT_BINARY_DIR}/test-manifests)
+endif()
