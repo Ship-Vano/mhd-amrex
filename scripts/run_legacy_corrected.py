@@ -38,6 +38,10 @@ CASES: dict[str, dict[str, Any]] = {
         "gamma": 2.0,
         "domain": (0.0, 1.0, -0.01, 0.01),
         "maxh": 0.0025,
+        # Dependency-free structured backend: two CCW right triangles per
+        # rectangle.  These are the T03 legacy_vkr resolutions so that the
+        # corrected and historical runs share an identical mesh hash.
+        "structured_resolution": (128, 4),
         "grading": 0.3,
         # Netgen's interior remains irregular.  Matching unperturbed boundary
         # nodes are required by legacy's coordinate-based periodic pairing.
@@ -52,6 +56,7 @@ CASES: dict[str, dict[str, Any]] = {
         "gamma": 5.0 / 3.0,
         "domain": (0.0, 2.0 / math.sqrt(3.0), 0.0, 2.0),
         "maxh": 0.04,
+        "structured_resolution": (32, 56),
         "grading": 0.3,
         "boundary_jitter": 0.0,
         "cfl": 0.1,
@@ -65,6 +70,7 @@ CASES: dict[str, dict[str, Any]] = {
         "domain": (-1.0, 1.0, -1.0 / (2.0 * math.cos(math.pi / 6.0)),
                    1.0 / (2.0 * math.cos(math.pi / 6.0))),
         "maxh": 0.04,
+        "structured_resolution": (64, 37),
         "grading": 0.3,
         "boundary_jitter": 0.0,
         "cfl": 0.1,
@@ -81,6 +87,7 @@ CASES: dict[str, dict[str, Any]] = {
         "gamma": 5.0 / 3.0,
         "domain": (-1.0, 1.0, -0.5, 0.5),
         "maxh": 0.04,
+        "structured_resolution": (64, 32),
         "grading": 0.3,
         "boundary_jitter": 0.0,
         "cfl": 0.1,
@@ -224,6 +231,15 @@ def main() -> int:
                         default=ROOT / "legacy/patches/0001-legacy-corrected-physics.patch")
     parser.add_argument("--netgen-python", type=Path,
                         default=Path("/private/tmp/mhd-netgen-venv/bin/python3"))
+    parser.add_argument("--mesh-backend", choices=("netgen", "structured"),
+                        default="netgen",
+                        help="netgen: irregular triangulation (robustness stress); "
+                             "structured: dependency-free CCW right-triangle mesh "
+                             "(reproducible, no Netgen, shares its hash with legacy_vkr)")
+    parser.add_argument("--structured-nx", type=int,
+                        help="override the case structured x resolution (rectangles)")
+    parser.add_argument("--structured-ny", type=int,
+                        help="override the case structured y resolution (rectangles)")
     parser.add_argument("--compiler", default=shutil.which("g++-15") or
                         "/opt/homebrew/opt/gcc/bin/g++-15")
     parser.add_argument("--jobs", type=int, default=4)
@@ -239,7 +255,7 @@ def main() -> int:
         raise SystemExit(f"refusing to overwrite existing artifact directory: {artifact}")
     if not overlay.is_file():
         raise SystemExit(f"overlay patch is missing: {overlay}")
-    if not args.netgen_python.is_file():
+    if args.mesh_backend == "netgen" and not args.netgen_python.is_file():
         raise SystemExit(f"Netgen Python interpreter is missing: {args.netgen_python}")
     if not Path(args.compiler).is_file():
         raise SystemExit(f"C++ compiler is missing: {args.compiler}")
@@ -254,6 +270,13 @@ def main() -> int:
         if not args.maxh > 0.0:
             raise SystemExit("--maxh must be positive")
         case["maxh"] = args.maxh
+    structured_nx, structured_ny = case.get("structured_resolution", (0, 0))
+    if args.structured_nx is not None:
+        structured_nx = args.structured_nx
+    if args.structured_ny is not None:
+        structured_ny = args.structured_ny
+    if args.mesh_backend == "structured" and not (structured_nx > 0 and structured_ny > 0):
+        raise SystemExit("structured backend needs a positive nx/ny (case default or override)")
     artifact.mkdir(parents=True)
     worktree = artifact / "source"
     build = artifact / "build"
@@ -282,18 +305,48 @@ def main() -> int:
     mesh = input_dir / "mesh.txt"
     mesh_metadata = input_dir / "mesh_metadata.json"
     xlo, xhi, ylo, yhi = case["domain"]
-    mesh_command = [
-        str(args.netgen_python), str(ROOT / "scripts/legacy_netgen_mesh.py"),
-        "--output", str(mesh), "--metadata", str(mesh_metadata),
-        "--xlo", str(xlo), "--xhi", str(xhi),
-        "--ylo", str(ylo), "--yhi", str(yhi),
-        "--maxh", str(case["maxh"]), "--grading", str(case["grading"]),
-        "--boundary-jitter", str(case["boundary_jitter"]),
-    ]
-    generated_mesh = invoke(mesh_command, cwd=worktree)
-    (artifact / "mesh_generation.log").write_text(
-        (generated_mesh.stdout or "") + (generated_mesh.stderr or ""), encoding="utf-8"
-    )
+    if args.mesh_backend == "structured":
+        # Dependency-free: emit the same minimal text format Netgen would,
+        # but with a deterministic CCW right-triangle pair per rectangle.
+        # Reproducible on any host and directly comparable to the AMReX
+        # Cartesian solver on a matched effective dx.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from legacy_vkr_mesh import write_rectangular_tri_mesh  # noqa: E402
+        try:
+            write_rectangular_tri_mesh(mesh, xlo, xhi, ylo, yhi,
+                                       structured_nx, structured_ny)
+            structured_meta = {
+                "generator": "scripts/legacy_vkr_mesh.py",
+                "backend": "structured",
+                "nx": structured_nx, "ny": structured_ny,
+                "nodes": (structured_nx + 1) * (structured_ny + 1),
+                "triangles": 2 * structured_nx * structured_ny,
+                "dx": (xhi - xlo) / structured_nx,
+                "dy": (yhi - ylo) / structured_ny,
+            }
+            mesh_metadata.write_text(
+                json.dumps(structured_meta, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            (artifact / "mesh_generation.log").write_text(
+                json.dumps(structured_meta, sort_keys=True) + "\n", encoding="utf-8")
+            generated_mesh = subprocess.CompletedProcess([], 0, "", "")
+        except Exception as exc:  # noqa: BLE001 - record the failure as evidence
+            (artifact / "mesh_generation.log").write_text(
+                f"structured mesh generation failed: {exc}\n", encoding="utf-8")
+            generated_mesh = subprocess.CompletedProcess([], 1, "", str(exc))
+    else:
+        mesh_command = [
+            str(args.netgen_python), str(ROOT / "scripts/legacy_netgen_mesh.py"),
+            "--output", str(mesh), "--metadata", str(mesh_metadata),
+            "--xlo", str(xlo), "--xhi", str(xhi),
+            "--ylo", str(ylo), "--yhi", str(yhi),
+            "--maxh", str(case["maxh"]), "--grading", str(case["grading"]),
+            "--boundary-jitter", str(case["boundary_jitter"]),
+        ]
+        generated_mesh = invoke(mesh_command, cwd=worktree)
+        (artifact / "mesh_generation.log").write_text(
+            (generated_mesh.stdout or "") + (generated_mesh.stderr or ""), encoding="utf-8"
+        )
     created_files.append("mesh_generation.log")
     if generated_mesh.returncode:
         errors.append("mesh_generation_failed")
@@ -501,10 +554,16 @@ def main() -> int:
             "cfl": case["cfl"],
             "domain": {"x": [xlo, xhi], "y": [ylo, yhi]},
             "mesh": {
-                "generator": "scripts/legacy_netgen_mesh.py",
-                "maxh": case["maxh"],
-                "grading": case["grading"],
-                "boundary_jitter": case["boundary_jitter"],
+                "backend": args.mesh_backend,
+                "generator": ("scripts/legacy_vkr_mesh.py"
+                              if args.mesh_backend == "structured"
+                              else "scripts/legacy_netgen_mesh.py"),
+                "maxh": None if args.mesh_backend == "structured" else case["maxh"],
+                "grading": None if args.mesh_backend == "structured" else case["grading"],
+                "boundary_jitter": (None if args.mesh_backend == "structured"
+                                    else case["boundary_jitter"]),
+                "structured_resolution": ([structured_nx, structured_ny]
+                                          if args.mesh_backend == "structured" else None),
                 "mesh_sha256": sha256(artifact / "mesh.txt") if (artifact / "mesh.txt").is_file() else None,
                 "metadata": read_json_if_present(artifact / "mesh_metadata.json"),
             },

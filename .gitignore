@@ -5,6 +5,12 @@
 /mhd2d_verify
 /tests/verify
 
+# Local convenience git worktree of the legacy MHD2D repo (branch
+# legacy_corrected_cpu_t05). The canonical, reproducible form of the corrected
+# legacy solver is legacy/patches/0001-legacy-corrected-physics.patch applied
+# to the immutable source at commit 9d0f60e (see scripts/run_legacy_corrected.py).
+/legacy/mhd2d-corrected/
+
 # CMake-generated files from in-source builds
 /CMakeCache.txt
 /CMakeFiles/
