@@ -73,6 +73,7 @@ private:
     void FillPhysicalFaceBoundary(int lev);             // ГУ для граневых B
     void SyncCellB(int lev);                            // интерполяция граней в центры (RT0)
     amrex::Real MaxDivB(int lev) const;
+    amrex::Long CountNonPositiveCells() const;          // ячейки, требующие floor ρ/p
     void WritePlotFile(int step, amrex::Real time);
 
     SimConfig cfg_;
@@ -91,6 +92,10 @@ private:
     amrex::Vector<amrex::BCRec> bcrec_;     // ГУ клеточных величин для FillPatch
     amrex::Real t_ = 0.0;
     int step_ = 0;
+
+    // Диагностика положительности (инвариант 1 в AGENTS.md): накопительный
+    // счётчик срабатываний HLLD→HLL за весь расчёт. На канонических тестах = 0.
+    amrex::Long hlld_fallbacks_ = 0;
 };
 
 } // namespace mhd

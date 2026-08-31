@@ -462,10 +462,12 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
     const EmfAveraging emode = cfg_.emf;
     const double gam = cfg_.gamma;
 
+    amrex::Long level_fallbacks = 0;
 #ifdef AMREX_USE_OMP
-#pragma omp parallel
+#pragma omp parallel reduction(+:level_fallbacks)
 #endif
     for (MFIter mfi(state_[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+        int fb = 0;   // срабатывания HLLD→HLL на данном тайле (LoopOnCpu — серийный)
         auto u   = state_[lev].const_array(mfi);
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
@@ -491,7 +493,7 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
                     qL[n] = face_value_plus (qm[n], q0[n], qp[n], lim);
                     qR[n] = face_value_minus(q0[n], qp[n], qq[n], lim);
                 }
-                hlld_flux(qL, qR, bxf(i,j,k), f, gam);   // Bn — из staggered-массива!
+                hlld_flux(qL, qR, bxf(i,j,k), f, gam, Limits{}, &fb);   // Bn — из staggered-массива!
                 for (int n = 0; n < NCONS; ++n) fx(i,j,k,n) = f[n];
             });
         }
@@ -511,7 +513,7 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
                     r[QU]=q[QV]; r[QV]=-q[QU]; r[QBX]=q[QBY]; r[QBY]=-q[QBX];
                 };
                 rot(qL, rL); rot(qR, rR);
-                hlld_flux(rL, rR, byf(i,j,k), f, gam);
+                hlld_flux(rL, rR, byf(i,j,k), f, gam, Limits{}, &fb);
                 fy(i,j,k,URHO)=f[URHO]; fy(i,j,k,UENE)=f[UENE];
                 fy(i,j,k,UMZ)=f[UMZ];   fy(i,j,k,UBZ)=f[UBZ];
                 fy(i,j,k,UMX)=-f[UMY];  fy(i,j,k,UMY)=f[UMX];
@@ -534,7 +536,33 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
                                         cell_emf_z(qmp), cell_emf_z(qpp), emode);
             });
         }
+        level_fallbacks += fb;
     }
+    hlld_fallbacks_ += level_fallbacks;
+}
+
+// Число ячеек с ρ ≤ small_rho либо p ≤ small_pres на всей иерархии (после
+// текущего шага). Молчаливый floor в cons_to_prim не считается доказательством
+// устойчивости — этот счётчик делает его наблюдаемым (инвариант 1, AGENTS.md).
+amrex::Long MhdAmr::CountNonPositiveCells() const
+{
+    const Limits lim;
+    amrex::Long n = 0;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
+            const Box& bx = mfi.validbox();
+            auto u = state_[lev].const_array(mfi);
+            const double gam = cfg_.gamma;
+            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+                double uc[NCONS];
+                for (int c = 0; c < NCONS; ++c) uc[c] = u(i,j,k,c);
+                if (!(uc[URHO] > lim.small_rho) ||
+                    !(pressure_from_cons(uc, gam) > lim.small_pres)) ++n;
+            });
+        }
+    }
+    ParallelDescriptor::ReduceLongSum(n);
+    return n;
 }
 
 // Инжекция узловых ЭДС мелкого уровня в совпадающие узлы грубого. Поскольку
@@ -789,10 +817,15 @@ void MhdAmr::Evolve()
         if (step_ % cfg_.diag_int == 0) {
             Real divb = 0.0;
             for (int lev = 0; lev <= finest_level; ++lev)
-                divb = std::max(divb, MaxDivB(lev));
+                divb = std::max(divb, MaxDivB(lev));   // MaxDivB уже делает ReduceRealMax
+            amrex::Long fb = hlld_fallbacks_;
+            ParallelDescriptor::ReduceLongSum(fb);
+            const amrex::Long nonpos = CountNonPositiveCells();
             amrex::Print() << "step " << step_ << "  t=" << t_
                            << "  dt=" << dt << "  max|divB|=" << divb
-                           << "  levels=" << finest_level + 1 << "\n";
+                           << "  levels=" << finest_level + 1
+                           << "  hlld_fallbacks=" << fb
+                           << "  nonpositive_cells=" << nonpos << "\n";
         }
         const bool plot_now =
             (cfg_.plot_int > 0 && step_ % cfg_.plot_int == 0) ||
@@ -804,7 +837,11 @@ void MhdAmr::Evolve()
         }
     }
     if (cfg_.write_plotfiles && last_plot_step != step_) WritePlotFile(step_, t_);
-    amrex::Print() << "Evolve finished: " << step_ << " steps, t=" << t_ << "\n";
+    amrex::Long fb_total = hlld_fallbacks_;
+    ParallelDescriptor::ReduceLongSum(fb_total);
+    amrex::Print() << "Evolve finished: " << step_ << " steps, t=" << t_
+                   << ", hlld_fallbacks=" << fb_total
+                   << ", nonpositive_cells=" << CountNonPositiveCells() << "\n";
 }
 
 } // namespace mhd

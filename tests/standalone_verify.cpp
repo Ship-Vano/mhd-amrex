@@ -168,6 +168,10 @@ struct Workspace {
     std::vector<Real> Ez;              // узловые ЭДС
 };
 
+// Счётчик срабатываний положительность-сохраняющего отката HLLD -> HLL.
+// На гладких канонических тестах обязан оставаться нулём (gate T04).
+static int g_hlld_fallbacks = 0;
+
 static Real max_signal_dt(Grid& g, Real gamma, Real cfl)
 {
     Real dt = 1.0e30;
@@ -220,7 +224,7 @@ static void euler_stage(Grid& g, Workspace& w, Real dt, Real gamma,
                 qR[n] = face_value_minus(q_at(i-1, j)[n], q_at(i, j)[n], q_at(i+1, j)[n], lim);
             }
             Real f[NCONS];
-            hlld_flux(qL, qR, g.fx(i, j), f, gamma);   // Bn — ИЗ ГРАНЕВОГО МАССИВА
+            hlld_flux(qL, qR, g.fx(i, j), f, gamma, Limits{}, &g_hlld_fallbacks);
             for (int n = 0; n < NCONS; ++n) fxv(i, j, n) = f[n];
         }
     }
@@ -244,7 +248,7 @@ static void euler_stage(Grid& g, Workspace& w, Real dt, Real gamma,
             };
             rot(qL, rL); rot(qR, rR);
             Real f[NCONS];
-            hlld_flux(rL, rR, g.fy(i, j), f, gamma);
+            hlld_flux(rL, rR, g.fy(i, j), f, gamma, Limits{}, &g_hlld_fallbacks);
             // Обратный поворот потока импульса/поля
             Real fg[NCONS];
             fg[URHO]=f[URHO]; fg[UENE]=f[UENE]; fg[UMZ]=f[UMZ]; fg[UBZ]=f[UBZ];
@@ -345,22 +349,26 @@ static void init_from_prim(Grid& g, Real gamma,
         }
 }
 
+enum class TimeInt { Euler, RK2 };
+
 static void run(Grid& g, Real gamma, Real cfl, Real tmax,
-                Limiter lim, EmfAveraging emf, const char* tag)
+                Limiter lim, EmfAveraging emf, const char* tag,
+                TimeInt ti = TimeInt::RK2)
 {
     Workspace w;
     Real t = 0.0; int step = 0; Real divmax_hist = 0.0;
     while (t < tmax) {
         Real dt = std::min(max_signal_dt(g, gamma, cfl), tmax - t);
-        rk2_step(g, w, dt, gamma, lim, emf);
+        if (ti == TimeInt::RK2) rk2_step(g, w, dt, gamma, lim, emf);
+        else                    euler_stage(g, w, dt, gamma, lim, emf);
         t += dt; ++step;
         divmax_hist = std::max(divmax_hist, max_divB(g));
         if (step % 100 == 0)
             std::printf("[%s] step %5d  t=%.4f  dt=%.3e  max|divB|=%.3e\n",
                         tag, step, t, dt, max_divB(g));
     }
-    std::printf("[%s] DONE: %d steps, t=%.4f, max|divB| over run = %.3e\n",
-                tag, step, t, divmax_hist);
+    std::printf("[%s] DONE: %d steps, t=%.4f, max|divB| over run = %.3e, hlld_fallbacks=%d\n",
+                tag, step, t, divmax_hist, g_hlld_fallbacks);
 }
 
 static void dump_field(Grid& g, Real gamma, const char* fname)
@@ -401,6 +409,38 @@ int main(int argc, char** argv)
             [](Real x, Real){ return (x < 0.5) ? 1.0 : -1.0; });
         run(g, gamma, 0.4, 0.1, Limiter::MC, EmfAveraging::GardinerStone, "briowu");
         dump_field(g, gamma, "out_briowu.csv");
+    }
+    else if (test == "briowu1d") {
+        // Параметризованная Брио–Ву-полоса для ablation-сравнения со схемой
+        // legacy (N0..N3 из ТЗ). Аргументы:
+        //   briowu1d <Nx> <none|minmod|mc|vanleer> <euler|rk2> <bs|gs> <cfl> [out.csv]
+        const Real gamma = 2.0;
+        const int  Nx    = (argc > 2) ? std::atoi(argv[2]) : 400;
+        const std::string slim = (argc > 3) ? argv[3] : "mc";
+        const std::string sti  = (argc > 4) ? argv[4] : "rk2";
+        const std::string semf = (argc > 5) ? argv[5] : "gs";
+        const Real cfl   = (argc > 6) ? std::atof(argv[6]) : 0.1;
+        const std::string out = (argc > 7) ? argv[7] : "out_briowu1d.csv";
+        Limiter lim = Limiter::MC;
+        if      (slim == "none")    lim = Limiter::None;
+        else if (slim == "minmod")  lim = Limiter::MinMod;
+        else if (slim == "vanleer") lim = Limiter::VanLeer;
+        const TimeInt ti = (sti == "euler") ? TimeInt::Euler : TimeInt::RK2;
+        const EmfAveraging emf = (semf == "bs") ? EmfAveraging::BalsaraSpicer
+                                                : EmfAveraging::GardinerStone;
+        Grid g(Nx, 4, 0.0, 1.0, 0.0, 4.0 / Nx);   // 4 ячейки по y, dy = dx
+        g.bclo[0] = g.bchi[0] = BC::Dirichlet;
+        g.bclo[1] = g.bchi[1] = BC::Periodic;
+        init_from_prim(g, gamma,
+            [](Real x, Real, Real* q) {
+                if (x < 0.5) { q[QRHO]=1.0;   q[QP]=1.0; }
+                else         { q[QRHO]=0.125; q[QP]=0.1; }
+                q[QU]=q[QV]=q[QW]=0.0; q[QBZ]=0.0;
+            },
+            [](Real, Real){ return 0.75; },
+            [](Real x, Real){ return (x < 0.5) ? 1.0 : -1.0; });
+        run(g, gamma, cfl, 0.1, lim, emf, "briowu1d", ti);
+        dump_field(g, gamma, out.c_str());
     }
     else if (test == "ot") {
         // Вихрь Орзага–Танга: периодический квадрат, γ=5/3, t=0.5

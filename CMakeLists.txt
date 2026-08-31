@@ -91,6 +91,9 @@ target_include_directories(mhd2d_verify PRIVATE src/kernels)
 add_executable(mhd2d_kernel_unit tests/kernel_unit.cpp)
 target_include_directories(mhd2d_kernel_unit PRIVATE src/kernels)
 
+add_executable(mhd2d_kernel_numerics tests/kernel_numerics.cpp)
+target_include_directories(mhd2d_kernel_numerics PRIVATE src/kernels)
+
 # Разбор конфигурации изолирован от AMReX, поэтому schema errors проверяются
 # быстро и до выделения mesh/field data.
 add_executable(mhd2d_config_validate
@@ -101,7 +104,7 @@ target_include_directories(mhd2d_config_validate PRIVATE src)
 target_link_libraries(mhd2d_config_validate PRIVATE nlohmann_json::nlohmann_json)
 
 # --- предупреждения --------------------------------------------------------------
-foreach(tgt mhd2d mhd2d_verify mhd2d_kernel_unit mhd2d_config_validate)
+foreach(tgt mhd2d mhd2d_verify mhd2d_kernel_unit mhd2d_kernel_numerics mhd2d_config_validate)
   target_compile_options(${tgt} PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra>)
 endforeach()
@@ -110,12 +113,16 @@ if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
   add_test(NAME kernel.unit COMMAND mhd2d_kernel_unit)
+  add_test(NAME kernel.numerics COMMAND mhd2d_kernel_numerics)
   add_test(NAME standalone.briowu
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_verify.py
                    --executable $<TARGET_FILE:mhd2d_verify> --case briowu)
   add_test(NAME standalone.alfven32
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_verify.py
                    --executable $<TARGET_FILE:mhd2d_verify> --case alfven --resolution 32)
+  add_test(NAME standalone.alfven_order
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_alfven_order.py
+                   --executable $<TARGET_FILE:mhd2d_verify> --coarse 64 --fine 128 --min-order 1.8)
   add_test(NAME config.valid
            COMMAND mhd2d_config_validate ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
   add_test(NAME config.rejects_unknown_key

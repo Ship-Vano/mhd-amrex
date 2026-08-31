@@ -23,6 +23,17 @@ def main() -> int:
     if not div_values or max(div_values) > 1.0e-10:
         print("verification regression: divergence diagnostic missing or too large", file=sys.stderr)
         return 1
+
+    # The positivity-preserving HLLD->HLL fallback must never fire on a smooth
+    # canonical case (T04 gate). A non-zero count means a floored / degenerate
+    # intermediate state occurred where the scheme should have stayed regular.
+    fallbacks = re.search(r"hlld_fallbacks=(\d+)", result.stdout)
+    if fallbacks is None:
+        print("verification regression: hlld_fallbacks diagnostic missing", file=sys.stderr)
+        return 1
+    if int(fallbacks.group(1)) != 0:
+        print(f"verification regression: {fallbacks.group(1)} HLLD fallbacks on a smooth case", file=sys.stderr)
+        return 1
     if args.case == "alfven":
         match = re.search(r"L1\(Bperp\)=([0-9.eE+-]+)", result.stdout)
         if match is None or float(match.group(1)) >= 1.0e-2:
