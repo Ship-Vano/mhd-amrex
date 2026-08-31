@@ -1,0 +1,6 @@
+# CP-Alfven B_perp relative L1 vs N; standalone mhd2d_verify, t=1, CFL 0.4
+N L1_Bperp
+16 0.102716
+32 0.0302493
+64 0.00870542
+128 0.00226918
