@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "snapshot_date": "2026-08-31",
+  "status": "partial",
+  "profile": "legacy_corrected_cpu",
+  "official_legacy": {
+    "commit": "9d0f60ea8576fac5d6f28c4dec142236d76131d6",
+    "source_archive_sha256": "afb51261d3d3b36760573afa4a12e7567d49bcfdc3b15c504ec9604df15ff440",
+    "source_tree_changed": false
+  },
+  "tracked_overlay": {
+    "path": "legacy/patches/0001-legacy-corrected-physics.patch",
+    "sha256": "7d7314c69c0813a989a6bc13591d38f5bce4966d69c3be7a1c8317818477e6bf",
+    "post_run_delta": "Adds the primitive/conservative conversion round-trip regression and mechanically removes trailing whitespace from the patch serialization; production solver and geometry semantics are unchanged relative to the two completed raw runs."
+  },
+  "fresh_clone_verification": {
+    "compiler": "/opt/homebrew/bin/g++-15",
+    "compiler_version": "GNU 15.2.0",
+    "openmp_version": "4.5",
+    "overlay_apply_check": "pass",
+    "diff_check": "pass",
+    "ctest": {
+      "passed": 1,
+      "total": 1
+    }
+  },
+  "completed_raw_runs": [
+    {
+      "artifact": "benchmarks/raw/legacy_corrected/cp_alfven_h004_t05final",
+      "manifest_sha256": "4ca4e7b815bb51955ec88138cab2a4940e257d82ffabfff016e10c6fef9aa363",
+      "overlay_sha256": "32f6260be09a3db87091be23c98f48fba218ee2ef9ae70df6b92dc793b29bc5a",
+      "quality_status": "pass",
+      "case": {
+        "id": "cp_alfven",
+        "gamma": 1.6666666666666667,
+        "cfl": 0.1,
+        "final_time": 1.0,
+        "geometry": "Toth 30-degree periodic CP-Alfven"
+      },
+      "mesh": {
+        "triangles": 3348,
+        "maxh": 0.04,
+        "min_angle_degrees": 37.739856358107005,
+        "max_radius_ratio": 1.3328036665387273
+      },
+      "solver": {
+        "iterations": 2452,
+        "hlld_to_hlle_fallbacks": 0,
+        "rho_min": 0.904806,
+        "pressure_min": 0.09427131868801612,
+        "final_div_b_max_abs": 6.089128472533436e-13,
+        "final_div_b_max_scaled": 3.3789631588748613e-15,
+        "total_energy_residual": 5.10639122407355e-15,
+        "cp_toth_average_relative_l1": 0.3015605481858403
+      },
+      "interpretation": "Finite, positive and conservative for this run; the first-order unstructured legacy result is not directly comparable to Toth's second-order table."
+    },
+    {
+      "artifact": "benchmarks/raw/legacy_corrected/magnetic_loop_athena_h008_t05final",
+      "manifest_sha256": "1fa316c4e7c5d33c643387e23170531a268f7fc43177426843d1984f745a4a7b",
+      "overlay_sha256": "32f6260be09a3db87091be23c98f48fba218ee2ef9ae70df6b92dc793b29bc5a",
+      "quality_status": "pass",
+      "case": {
+        "id": "magnetic_loop_athena",
+        "gamma": 1.6666666666666667,
+        "cfl": 0.1,
+        "final_time": 4.618802153517007,
+        "velocity": [0.8660254037844386, 0.5000000000000001],
+        "loop_radius": 0.3,
+        "loop_amplitude": 0.001
+      },
+      "mesh": {
+        "triangles": 828,
+        "maxh": 0.08,
+        "min_angle_degrees": 38.96607472786927,
+        "max_radius_ratio": 1.20786969408843
+      },
+      "solver": {
+        "iterations": 9904,
+        "hlld_to_hlle_fallbacks": 0,
+        "rho_min": 1.0,
+        "pressure_min": 1.0000002237897156,
+        "final_div_b_max_abs": 1.3995176067176924e-16,
+        "final_div_b_max_scaled": 1.6605115467456643e-15,
+        "total_energy_residual": -1.1554258887409623e-14,
+        "magnetic_energy_final_over_initial": 0.04731404641592561,
+        "magnetic_return_b_relative_l1": 1.239045183344176
+      },
+      "interpretation": "Finite and divergence-clean, but strongly numerically diffusive at h=0.08; this is a negative quality result retained for future refinement comparison."
+    }
+  ],
+  "interrupted_not_measurements": [
+    "benchmarks/raw/legacy_corrected/magnetic_loop_athena_h004_t05final",
+    "benchmarks/raw/legacy_corrected/brio_wu_h0025_t05final"
+  ],
+  "blockers": [
+    "Repeat canonical raw runs with the tracked overlay SHA before treating them as post-commit evidence.",
+    "CUDA path was neither modified nor verified; no CPU/CUDA parity claim is valid.",
+    "Brio-Wu regular versus compound/non-regular reference branch is not selected; T06 diagnostics remain blocked.",
+    "Historical VKR/Elements results have no proven exact commit/config/run provenance.",
+    "No performance or scaling result is measured."
+  ]
+}

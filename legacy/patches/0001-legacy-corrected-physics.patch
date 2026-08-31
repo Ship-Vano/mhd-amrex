@@ -1,0 +1,2274 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3f98498..5fbdfa9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,6 @@
+ cmake_minimum_required(VERSION 3.22)
+ project(MHD2D LANGUAGES CXX)
++include(CTest)
+
+ # Set C++ standard
+ set(CMAKE_CXX_STANDARD 23)
+@@ -49,6 +50,32 @@ else()
+     message(WARNING "OpenMP not found, continuing without OpenMP support")
+ endif()
+
++if(BUILD_TESTING)
++    add_executable(legacy_corrected_kernel_test
++        tests/legacy_corrected_kernel_test.cpp
++        src/MHDsolver/MHDSolver1D.cpp
++        src/MHDsolver/MHDSolver2D.cpp
++        src/geometry/NetGeometry.cpp
++        src/include/utility/utility.cpp
++    )
++    target_include_directories(legacy_corrected_kernel_test PRIVATE
++        ${CMAKE_SOURCE_DIR}/src/MHDsolver
++        ${CMAKE_SOURCE_DIR}/src/geometry
++        ${CMAKE_SOURCE_DIR}/src/include
++    )
++    if(OpenMP_CXX_FOUND)
++        target_link_libraries(legacy_corrected_kernel_test PRIVATE OpenMP::OpenMP_CXX)
++    endif()
++    add_test(
++        NAME legacy_corrected_kernel
++        COMMAND legacy_corrected_kernel_test
++            ${CMAKE_SOURCE_DIR}/tests/data/irregular_periodic_mesh.txt
++            ${CMAKE_SOURCE_DIR}/tests/data/sliver_periodic_mesh.txt
++            ${CMAKE_SOURCE_DIR}/tests/data/irregular_periodic_mesh_cw.txt
++    )
++    set_tests_properties(legacy_corrected_kernel PROPERTIES TIMEOUT 30)
++endif()
++
+ option(USE_CUDA "Enable CUDA support" OFF)
+
+ if(USE_CUDA)
+diff --git a/src/MHDsolver/MHDSolver1D.cpp b/src/MHDsolver/MHDSolver1D.cpp
+index fca0f3c..1092357 100644
+--- a/src/MHDsolver/MHDSolver1D.cpp
++++ b/src/MHDsolver/MHDSolver1D.cpp
+@@ -3,8 +3,10 @@
+ //
+ #include "MHDSolver1D.h"
+
++#include <stdexcept>
++
+ /*          0      1      2      3    4   5   6   7
+- * state:  rho,  rho*u, rho*v, rho*w, e, Bx, Bz, By
++ * state:  rho,  rho*u, rho*v, rho*w, e, Bx, By, Bz
+  * */
+
+ // Давление
+@@ -144,7 +146,7 @@ double cfast(const std::vector<double>& U, const double& gam_hcr) {
+ // Определяем HLL поток F
+ std::vector<double> HLL_flux(const std::vector<double>& U_L, const std::vector<double>& U_R, const double &gam_hcr) {
+     /*          0      1      2      3    4   5   6   7
+-     * state:  rho,  rho*u, rho*v, rho*w, e, Bx, Bz, By
++     * state:  rho,  rho*u, rho*v, rho*w, e, Bx, By, Bz
+      */
+     double rho_L = U_L[0];
+     double u_L = U_L[1]/rho_L;
+@@ -188,7 +190,7 @@ std::vector<double> HLL_flux(const std::vector<double>& U_L, const std::vector<d
+ // Определяем HLLC поток F
+ std::vector<double> HLLC_flux(const std::vector<double>& U_L, const std::vector<double>& U_R, const double &gam_hcr) {
+     /*          0      1      2      3    4   5   6   7
+-     * state:  rho,  rho*u, rho*v, rho*w, e, Bx, Bz, By
++     * state:  rho,  rho*u, rho*v, rho*w, e, Bx, By, Bz
+      */
+     double rho_L = U_L[0];
+     double u_L = U_L[1]/rho_L;
+@@ -299,7 +301,7 @@ std::vector<double> HLLC_flux(const std::vector<double>& U_L, const std::vector<
+ // Определяем HLLD поток F
+ std::vector<double> HLLD_flux(const std::vector<double>& U_L, const std::vector<double>& U_R, const double &gam_hcr) {
+     /*          0      1      2      3    4   5   6   7
+-     * state:  rho,  rho*u, rho*v, rho*w, e, Bx, Bz, By
++     * state:  rho,  rho*u, rho*v, rho*w, e, Bx, By, Bz
+      */
+     double rho_L = U_L[0];
+     double u_L = U_L[1]/rho_L;
+@@ -446,6 +448,162 @@ std::vector<double> HLLD_flux(const std::vector<double>& U_L, const std::vector<
+     }
+ }
+
++std::vector<double> HLLD_flux_corrected(std::vector<double> U_L, std::vector<double> U_R,
++                                        const double &gam_hcr, std::size_t* fallbackCounter) {
++    constexpr double tiny = 1.0e-14;
++    const auto finite_state = [](const std::vector<double>& U) {
++        if (U.size() != 8 || !(U[0] > 0.0)) return false;
++        for (const double value : U) if (!std::isfinite(value)) return false;
++        return true;
++    };
++    const auto require_admissible = [&](const std::vector<double>& U, const char* label) {
++        if (!finite_state(U)) throw std::domain_error(std::string("HLLD received an invalid ") + label + " state");
++        const double p = pressure(U, gam_hcr);
++        if (!(p > 0.0) || !std::isfinite(p)) {
++            throw std::domain_error(std::string("HLLD received a nonpositive-pressure ") + label + " state");
++        }
++    };
++    require_admissible(U_L, "left");
++    require_admissible(U_R, "right");
++
++    // CT owns Bn.  Retain the gas pressure when changing the conservative
++    // state from a cell-centred normal field to this face-normal field.
++    const double Bx = 0.5 * (U_L[5] + U_R[5]);
++    U_L[4] += 0.5 * (Bx * Bx - U_L[5] * U_L[5]);
++    U_R[4] += 0.5 * (Bx * Bx - U_R[5] * U_R[5]);
++    U_L[5] = Bx;
++    U_R[5] = Bx;
++    require_admissible(U_L, "left CT-normalized");
++    require_admissible(U_R, "right CT-normalized");
++
++    const double rhoL = U_L[0], rhoR = U_R[0];
++    const double uL = U_L[1] / rhoL, uR = U_R[1] / rhoR;
++    const double vL = U_L[2] / rhoL, vR = U_R[2] / rhoR;
++    const double wL = U_L[3] / rhoL, wR = U_R[3] / rhoR;
++    const double ByL = U_L[6], ByR = U_R[6];
++    const double BzL = U_L[7], BzR = U_R[7];
++    const double pL = pressure(U_L, gam_hcr), pR = pressure(U_R, gam_hcr);
++    const double pTL = ptotal(pL, Bx, ByL, BzL);
++    const double pTR = ptotal(pR, Bx, ByR, BzR);
++    const auto fast_speed = [&](const double rho, const double p, const double By, const double Bz) {
++        const double a2 = gam_hcr * p / rho;
++        const double ca2 = (Bx * Bx + By * By + Bz * Bz) / rho;
++        const double cn2 = Bx * Bx / rho;
++        const double sum = a2 + ca2;
++        // The continuous discriminant is nonnegative; this only removes
++        // roundoff from that algebraic invariant, not a physical state floor.
++        const double discriminant = std::max(0.0, sum * sum - 4.0 * a2 * cn2);
++        const double result = std::sqrt(0.5 * (sum + std::sqrt(discriminant)));
++        if (!std::isfinite(result)) throw std::domain_error("HLLD could not form a finite fast-wave speed");
++        return result;
++    };
++    const double cfL = fast_speed(rhoL, pL, ByL, BzL);
++    const double cfR = fast_speed(rhoR, pR, ByR, BzR);
++    const double cmax = std::max(cfL, cfR);
++    const double SL = std::min(uL, uR) - cmax;
++    const double SR = std::max(uL, uR) + cmax;
++    if (!(SL < SR)) throw std::domain_error("HLLD signal-speed interval is invalid");
++
++    const std::vector<double> FL = MHD_flux(U_L, gam_hcr);
++    const std::vector<double> FR = MHD_flux(U_R, gam_hcr);
++    const auto fallback_hlle = [&]() {
++        if (fallbackCounter != nullptr) ++(*fallbackCounter);
++        const double denominator = SR - SL;
++        if (!(denominator > 0.0) || !std::isfinite(denominator)) {
++            throw std::domain_error("HLLE fallback signal-speed interval is invalid");
++        }
++        std::vector<double> result(8, 0.0);
++        for (int n = 0; n < 8; ++n) {
++            result[n] = (SR * FL[n] - SL * FR[n] + SL * SR * (U_R[n] - U_L[n])) / denominator;
++            if (!std::isfinite(result[n])) throw std::domain_error("HLLE fallback produced a non-finite flux");
++        }
++        return result;
++    };
++    if (SL >= 0.0) return FL;
++    if (SR <= 0.0) return FR;
++
++    const double aL = SL - uL, aR = SR - uR;
++    const double den = aR * rhoR - aL * rhoL;
++    if (std::abs(den) < tiny || !std::isfinite(den)) return fallback_hlle();
++    const double SM = (aR * rhoR * uR - aL * rhoL * uL - pTR + pTL) / den;
++    const double pTs = (aR * rhoR * pTL - aL * rhoL * pTR +
++                        rhoL * rhoR * aR * aL * (uR - uL)) / den;
++    if (!std::isfinite(SM) || !std::isfinite(pTs) || !(pTs > 0.0)) return fallback_hlle();
++
++    struct Star { std::vector<double> U; double sqrt_rho; };
++    const auto star_state = [&](const std::vector<double>& U, const double rho, const double u,
++                                const double v, const double w, const double By, const double Bz,
++                                const double pT, const double S) -> Star {
++        const double su = S - u;
++        const double sm = S - SM;
++        if (std::abs(sm) < tiny) return {{}, 0.0};
++        const double rhos = rho * su / sm;
++        if (!(rhos > tiny) || !std::isfinite(rhos)) return {{}, 0.0};
++        const double d = rho * su * sm - Bx * Bx;
++        double vs = v, ws = w, Bys = By, Bzs = Bz;
++        if (std::abs(d) >= tiny * std::max(1.0, std::abs(rho * su * su))) {
++            const double c1 = (SM - u) / d;
++            const double c2 = (rho * su * su - Bx * Bx) / d;
++            vs = v - Bx * By * c1;
++            ws = w - Bx * Bz * c1;
++            Bys = By * c2;
++            Bzs = Bz * c2;
++        }
++        const double vB = u * Bx + v * By + w * Bz;
++        const double vBs = SM * Bx + vs * Bys + ws * Bzs;
++        const double es = (su * U[4] - pT * u + pTs * SM + Bx * (vB - vBs)) / sm;
++        std::vector<double> Us{rhos, rhos * SM, rhos * vs, rhos * ws, es, Bx, Bys, Bzs};
++        if (!finite_state(Us) || !(pressure(Us, gam_hcr) > 0.0)) return {{}, 0.0};
++        return {Us, std::sqrt(rhos)};
++    };
++
++    const Star UsL = star_state(U_L, rhoL, uL, vL, wL, ByL, BzL, pTL, SL);
++    const Star UsR = star_state(U_R, rhoR, uR, vR, wR, ByR, BzR, pTR, SR);
++    if (UsL.U.empty() || UsR.U.empty()) return fallback_hlle();
++    const double SsL = SM - std::abs(Bx) / UsL.sqrt_rho;
++    const double SsR = SM + std::abs(Bx) / UsR.sqrt_rho;
++    const auto rh_flux = [](const std::vector<double>& F, const double S,
++                            const std::vector<double>& Us, const std::vector<double>& U) {
++        std::vector<double> result(8);
++        for (int n = 0; n < 8; ++n) result[n] = F[n] + S * (Us[n] - U[n]);
++        return result;
++    };
++    if (SsL >= 0.0) return rh_flux(FL, SL, UsL.U, U_L);
++    if (SsR <= 0.0) return rh_flux(FR, SR, UsR.U, U_R);
++    if (std::abs(Bx) < tiny) {
++        return SM >= 0.0 ? rh_flux(FL, SL, UsL.U, U_L) : rh_flux(FR, SR, UsR.U, U_R);
++    }
++
++    const double signBx = Bx >= 0.0 ? 1.0 : -1.0;
++    const double inv = 1.0 / (UsL.sqrt_rho + UsR.sqrt_rho);
++    const double vLs = UsL.U[2] / UsL.U[0], wLs = UsL.U[3] / UsL.U[0];
++    const double vRs = UsR.U[2] / UsR.U[0], wRs = UsR.U[3] / UsR.U[0];
++    const double vss = (UsL.sqrt_rho * vLs + UsR.sqrt_rho * vRs + (UsR.U[6] - UsL.U[6]) * signBx) * inv;
++    const double wss = (UsL.sqrt_rho * wLs + UsR.sqrt_rho * wRs + (UsR.U[7] - UsL.U[7]) * signBx) * inv;
++    const double Byss = (UsL.sqrt_rho * UsR.U[6] + UsR.sqrt_rho * UsL.U[6] +
++                         UsL.sqrt_rho * UsR.sqrt_rho * (vRs - vLs) * signBx) * inv;
++    const double Bzss = (UsL.sqrt_rho * UsR.U[7] + UsR.sqrt_rho * UsL.U[7] +
++                         UsL.sqrt_rho * UsR.sqrt_rho * (wRs - wLs) * signBx) * inv;
++    const bool left = SM >= 0.0;
++    const Star& Us = left ? UsL : UsR;
++    const double vBs = SM * Bx + (Us.U[2] / Us.U[0]) * Us.U[6] + (Us.U[3] / Us.U[0]) * Us.U[7];
++    const double vBss = SM * Bx + vss * Byss + wss * Bzss;
++    const double energySign = left ? -signBx : signBx;
++    std::vector<double> Uss{Us.U[0], Us.U[0] * SM, Us.U[0] * vss, Us.U[0] * wss,
++                            Us.U[4] + energySign * Us.sqrt_rho * (vBs - vBss), Bx, Byss, Bzss};
++    if (!finite_state(Uss) || !(pressure(Uss, gam_hcr) > 0.0)) return fallback_hlle();
++    std::vector<double> result(8);
++    if (left) {
++        for (int n = 0; n < 8; ++n)
++            result[n] = FL[n] + SsL * Uss[n] - (SsL - SL) * UsL.U[n] - SL * U_L[n];
++    } else {
++        for (int n = 0; n < 8; ++n)
++            result[n] = FR[n] + SsR * Uss[n] - (SsR - SR) * UsR.U[n] - SR * U_R[n];
++    }
++    for (const double value : result) if (!std::isfinite(value)) return fallback_hlle();
++    return result;
++}
++
+
+ /* Инициализация начального состояния системы (каждой точке пространства ставим в соотвествие величину начального отклонения)
+  * args: problem
+@@ -768,4 +926,4 @@ bool HLLDScheme(const MHDProblem1D &problem, const std::string &filename) {
+         std::cout << "log[ERROR]: Couldn't open or create a file." << std::endl;
+         return false;
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/src/MHDsolver/MHDSolver1D.h b/src/MHDsolver/MHDSolver1D.h
+index 89d951f..47585f8 100644
+--- a/src/MHDsolver/MHDSolver1D.h
++++ b/src/MHDsolver/MHDSolver1D.h
+@@ -9,6 +9,8 @@
+ #include "service/LinOp.h"
+ #include "service/FileIO.h"
+
++#include <cstddef>
++
+ double cfast(const std::vector<double>& U, const double& gam_hcr);
+
+ std::vector<double> state_from_primitive_vars(const double &rho, const double &u, const double &v, const double &w, const double &p, const double &Bx, const double &By, const double &Bz, const double &gam_hcr);
+@@ -17,6 +19,7 @@ double energy(const double &gam_hcr, const double &p, const double &rho, const d
+ double pressure(const double &gam_hcr, const double &e, const double &rho, const double &u, const double &v, const double &w, const double &Bx, const double &By, const double &Bz);
+ double pressure(const std::vector<double> &U, const double &gam_hcr);
+ double ptotal(const double &p, const double &Bx, const double &By, const double &Bz);
++std::vector<double> MHD_flux(const std::vector<double>& U, const double &gam_hcr);
+ double tau_from_cfl(const double& sigma, const double& h, const std::vector<std::vector<double>>& states, const int& num_space_steps, const double& gam_hcr);
+
+ std::vector<double> HLL_flux(const std::vector<double>& U_L, const std::vector<double>& U_R, const double &gam_hcr);
+@@ -25,6 +28,11 @@ std::vector<double> HLLC_flux(const std::vector<double>& U_L, const std::vector<
+
+ std::vector<double> HLLD_flux(const std::vector<double>& U_L, const std::vector<double>& U_R, const double &gam_hcr);
+
++// Corrected Miyoshi--Kusano HLLD flux.  The caller supplies the same
++// CT-owned edge-normal B component in U_L[5] and U_R[5].
++std::vector<double> HLLD_flux_corrected(std::vector<double> U_L, std::vector<double> U_R,
++                                        const double &gam_hcr, std::size_t* fallbackCounter = nullptr);
++
+ bool HLLScheme(const MHDProblem1D &problem, const std::string &filename ="HLLScheme");
+
+ bool HLLCScheme(const MHDProblem1D &problem, const std::string &filename ="HLLCScheme");
+diff --git a/src/MHDsolver/MHDSolver2D.cpp b/src/MHDsolver/MHDSolver2D.cpp
+index 0a2ee03..ceb54aa 100644
+--- a/src/MHDsolver/MHDSolver2D.cpp
++++ b/src/MHDsolver/MHDSolver2D.cpp
+@@ -4,6 +4,10 @@
+
+ #include "MHDSolver2D.h"
+
++#include <iomanip>
++#include <limits>
++#include <sstream>
++
+ double gas_energy(const double& gam_hcr, const double& gas_p, const double& rho, const double& u, const double& v, const double& w){
+     return gas_p / (gam_hcr - 1.0) + rho * (u * u + v * v + w * w) / 2.0;
+ }
+@@ -160,6 +164,107 @@ double MHDSolver2D::tau_from_cfl2D(const double& sigma, const double& min_h, std
+     return std::min(optimal_tau, 1e-3);
+ }
+
++double MHDSolver2D::stableTimeStepUnstructured(const std::vector<std::vector<double>>& states,
++                                                const std::vector<double>& faceNormalB,
++                                                const double& gam_hcr) {
++    const EdgePool edgePool = geometryWorld.getEdgePool();
++    const ElementPool elementPool = geometryWorld.getElementPool();
++    const NeighbourService neighbours = geometryWorld.getNeighbourService();
++    const int physicalElementCount = elementPool.elCount - geometryWorld.ghostElemCount;
++    const int physicalEdgeCount = edgePool.edgeCount - geometryWorld.ghostElemCount * 2;
++    if (static_cast<int>(states.size()) != physicalElementCount ||
++        static_cast<int>(faceNormalB.size()) < physicalEdgeCount) {
++        throw std::runtime_error("Unstructured CFL input does not match the physical legacy mesh");
++    }
++    const auto periodic_partner_edge = [&](const int boundaryEdge) {
++        const auto top = neighbours.boundaryEdgeTopToBottom.find(boundaryEdge);
++        if (top != neighbours.boundaryEdgeTopToBottom.end()) return top->second;
++        for (const auto& [first, second] : neighbours.boundaryEdgeTopToBottom) {
++            if (second == boundaryEdge) return first;
++        }
++        const auto left = neighbours.boundaryEdgeLeftToRight.find(boundaryEdge);
++        if (left != neighbours.boundaryEdgeLeftToRight.end()) return left->second;
++        for (const auto& [first, second] : neighbours.boundaryEdgeLeftToRight) {
++            if (second == boundaryEdge) return first;
++        }
++        return -1;
++    };
++    const auto face_state = [&](const std::vector<double>& state, const Edge& edge) {
++        if (state.size() != 8 || !(state[0] > 0.0)) {
++            throw std::runtime_error("Unstructured CFL received a nonpositive density");
++        }
++        for (const double value : state) {
++            if (!std::isfinite(value)) throw std::runtime_error("Unstructured CFL received a non-finite state");
++        }
++        std::vector<double> stateCopy(state);
++        std::vector<double> normal = rotateStateFromAxisToNormal(stateCopy, edge.normalVector);
++        const double gasPressure = pressure(normal, gam_hcr);
++        if (!(gasPressure > 0.0) || !std::isfinite(gasPressure)) {
++            throw std::runtime_error("Unstructured CFL received a nonpositive pressure");
++        }
++        const double oldBn = normal[5];
++        normal[5] = faceNormalB.at(edge.ind);
++        normal[4] += 0.5 * (normal[5] * normal[5] - oldBn * oldBn);
++        return normal;
++    };
++    const auto fast_speed = [&](const std::vector<double>& normal) {
++        const double rho = normal[0];
++        const double p = pressure(normal, gam_hcr);
++        const double b2 = normal[5] * normal[5] + normal[6] * normal[6] + normal[7] * normal[7];
++        const double a2 = gam_hcr * p / rho;
++        const double ca2 = b2 / rho;
++        const double cn2 = normal[5] * normal[5] / rho;
++        const double sum = a2 + ca2;
++        const double discriminant = std::max(0.0, sum * sum - 4.0 * a2 * cn2);
++        const double result = std::sqrt(0.5 * (sum + std::sqrt(discriminant)));
++        if (!std::isfinite(result)) throw std::runtime_error("Unstructured CFL produced a non-finite fast speed");
++        return result;
++    };
++
++    std::vector<double> edgeSignal(physicalEdgeCount, 0.0);
++    for (int edgeIndex = 0; edgeIndex < physicalEdgeCount; ++edgeIndex) {
++        const Edge& edge = edgePool.edges[edgeIndex];
++        const std::vector<double> left = face_state(states.at(edge.neighbourInd1), edge);
++        std::vector<double> right;
++        if (edge.neighbourInd2 >= 0) {
++            right = face_state(states.at(edge.neighbourInd2), edge);
++        } else if (periodicBoundaries) {
++            const int partner = periodic_partner_edge(edge.ind);
++            if (partner < 0) throw std::runtime_error("Periodic edge has no CFL partner");
++            right = face_state(states.at(edgePool.edges[partner].neighbourInd1), edge);
++        } else {
++            right = left;
++        }
++        const double cmax = std::max(fast_speed(left), fast_speed(right));
++        const double sl = std::min(left[1] / left[0], right[1] / right[0]) - cmax;
++        const double sr = std::max(left[1] / left[0], right[1] / right[0]) + cmax;
++        edgeSignal[edgeIndex] = std::max({0.0, -sl, sr});
++    }
++    double stableDt = std::numeric_limits<double>::infinity();
++    for (int elementIndex = 0; elementIndex < physicalElementCount; ++elementIndex) {
++        const Element& element = elementPool.elements[elementIndex];
++        if (!(element.area > 0.0) || !std::isfinite(element.area)) {
++            throw std::runtime_error("Unstructured CFL encountered a degenerate element");
++        }
++        double spectralPerimeter = 0.0;
++        for (const int edgeIndex : element.edgeIndexes) {
++            if (edgeIndex < 0 || edgeIndex >= physicalEdgeCount) {
++                throw std::runtime_error("Physical element references a nonphysical CFL edge");
++            }
++            spectralPerimeter += edgePool.edges[edgeIndex].length * edgeSignal[edgeIndex];
++        }
++        if (!(spectralPerimeter > 0.0) || !std::isfinite(spectralPerimeter)) {
++            throw std::runtime_error("Unstructured CFL encountered a nonpositive spectral perimeter");
++        }
++        stableDt = std::min(stableDt, element.area / spectralPerimeter);
++    }
++    const double result = cflNum * stableDt;
++    if (!(result > 0.0) || !std::isfinite(result)) {
++        throw std::runtime_error("Unstructured CFL timestep is not positive and finite");
++    }
++    return result;
++}
++
+ // задание начальных условий
+ void MHDSolver2D::setInitElemUs() {
+
+@@ -172,7 +277,9 @@ void MHDSolver2D::setInitElemUs() {
+
+     // Brio-Wu problem
+     if(task_type == 1) {
+-        cflNum = 0.9;
++        // The historical source hard-coded 0.9 here although the documented
++        // Brio--Wu case uses 0.1.  The corrected profile makes CFL explicit.
++        cflNum = configuredCfl > 0.0 ? configuredCfl : 0.1;
+         freeFLowBoundaries = true;
+         periodicBoundaries = false;
+         std::cout << "SOLVING TASKTYPE 1 (BRIO-WU TEST)" << std::endl;
+@@ -208,18 +315,23 @@ void MHDSolver2D::setInitElemUs() {
+         initBns.resize(edgp.edgeCount, 0.0);
+         initGhostBNs.resize(geometryWorld.ghostElemCount*2, 0.0);
+         initEdgeUs.resize(edgp.edgeCount, std::vector<double>(8, 0.0));
++        // Store the edge integral Bn*|e| through a continuous vector
++        // potential, rather than midpoint sampling on oblique triangles.
++        const auto az_at = [](const Node& node) {
++            const double g = node.pos.x < 0.5 ? node.pos.x : 1.0 - node.pos.x;
++            return 0.75 * node.pos.y - g;
++        };
+         for (int i = 0; i < edgp.edgeCount; ++i) {
+             Edge edge = edgp.edges[i];
+             Vec2 midP = edge.midPoint;
+             int edgeInd = edge.ind;
+-            Vec2 normal = edge.normalVector;
+             std::vector<double> state;
+             if (midP.x < 0.5) {
+                 state = state_from_primitive_vars(BrioWu_L1);
+             } else {
+                 state = state_from_primitive_vars(BrioWu_R1);
+             }
+-            double Bn = state[5] * normal.x + state[6] * normal.y;
++            const double Bn = (az_at(np.nodes[edge.nodeInd2]) - az_at(np.nodes[edge.nodeInd1])) / edge.length;
+             initBns[edgeInd] = Bn;
+             if(i < innerEdgeCount) {
+                 initBns[edgeInd] = Bn;
+@@ -610,8 +722,9 @@ void MHDSolver2D::setInitElemUs() {
+         double rho = 1.0;
+         double p = 1.0;
+         gam_hcr = 5.0/3.0;
+-        finalTime = 2.0;
+-        cflNum = 0.1;
++        // finalTime comes from the case manifest: historical scaled and
++        // Athena-compatible variants are distinct test cards.
++        cflNum = configuredCfl > 0.0 ? configuredCfl : 0.1;
+         periodicBoundaries = true;
+         freeFLowBoundaries = false;
+         freeFLowBoundaries2 = false;
+@@ -620,8 +733,8 @@ void MHDSolver2D::setInitElemUs() {
+         initBns.resize(edgp.edgeCount, 0.0);
+         initGhostElemUs.resize(geometryWorld.ghostElemCount, std::vector<double>(8, 0.0));
+         initGhostBNs.resize(geometryWorld.ghostElemCount*2, 0.0);
+-        double R0 = 0.3;  // Радиус петли
+-        double A = 1.0e-3;   // Амплитуда
++        double R0 = fieldLoopRadius;
++        double A = fieldLoopAmplitude;
+         double xc = 0.0, yc = 0.0;  // Центр петли
+         std::vector<double> AzField(np.nodeCount, 0.0);
+         for (auto& node : np.nodes) {
+@@ -637,7 +750,7 @@ void MHDSolver2D::setInitElemUs() {
+             Node& node2 = np.nodes[edge.nodeInd2];
+             double Az1 = AzField[node1.ind];
+             double Az2 = AzField[node2.ind];
+-            double Bn = (Az2-Az1)/edge.length;
++            const double Bn = edgeCtOrientation(edge, np) * (Az2 - Az1) / edge.length;
+             initBns[edge.ind] = Bn;
+             if(i < innerEdgeCount) {
+                 initBns[edge.ind] = Bn;
+@@ -647,59 +760,16 @@ void MHDSolver2D::setInitElemUs() {
+             }
+         }
+         for (int i = 0; i < innerElemCount; ++i) {
+-            Element elem = ep.elements[i];
+-            Vec2 centroid = elem.centroid2D;
+-            double x = centroid.x;
+-            double y = centroid.y;
+-            double u = 2.0;//std::sin(std::numbers::pi_v<double>/3.0);
+-            double v = 1.0;//std::cos(std::numbers::pi_v<double>/3.0);
+-            double w = 0.0;
+-            double Bz = 0.0;
+-            double Bx = 0.0;
+-            double By = 0.0;
+-            double temp_sum_Bx = 0.0;
+-            double temp_sum_By = 0.0;
+-            for (const auto &edgeInd: elem.edgeIndexes) {
+-                Edge edge = edgp.edges[edgeInd];
+-                if (edge.neighbourInd1 == elem.ind) {
+-                    // у первого соседа в эдже заданы ноды в порядке положительного обхода и нормаль тоже
+-                    const auto nodeInElemInd = std::find(elem.nodeIndexes.begin(), elem.nodeIndexes.end(),
+-                                                         edge.nodeInd1);
+-                    int node_before_ind =
+-                            nodeInElemInd == elem.nodeIndexes.begin() ? elem.nodeIndexes[elem.dim - 1] : *(
+-                                    nodeInElemInd - 1);
+-                    //std::cout << "edge of nodes = {"<< edge.nodeInd1 << " , " << edge.nodeInd2 << " } current ind = " << edge.nodeInd1 <<" Elem's node indexes: " << elem.nodeIndexes[0] << " "<< elem.nodeIndexes[1] << " "<< elem.nodeIndexes[2] << ", node_beforeInd = " << node_before_ind << std::endl;
+-                    //std::cin.get();
+-                    Node node_before = np.getNode(node_before_ind);
+-                    if(edgeInd < innerEdgeCount) {
+-                        Bx += initBns[edgeInd] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        By += initBns[edgeInd] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                    else{
+-                        continue;
+-                        Bx += initGhostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        By += initGhostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                } else if(edge.neighbourInd2 != -1){
+-                    // а вот для второго нужно умножать на -1 и в обратном порядке
+-                    const auto nodeInElemInd = std::find(elem.nodeIndexes.begin(), elem.nodeIndexes.end(),
+-                                                         edge.nodeInd2);
+-                    int node_before_ind =
+-                            nodeInElemInd == elem.nodeIndexes.begin() ? elem.nodeIndexes[elem.dim - 1] : *(
+-                                    nodeInElemInd - 1);
+-                    Node node_before = np.getNode(node_before_ind);
+-                    if(edgeInd < innerEdgeCount) {
+-                        Bx -= initBns[edgeInd] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        By -= initBns[edgeInd] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                    else{
+-                        continue;
+-                        Bx -= initGhostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        By -= initGhostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                }
+-            }
+-            initElemUs[elem.ind] = state_from_primitive_vars2D(rho, u, v, w, p, Bx, By, Bz, gam_hcr);
++            const Element& elem = ep.elements[i];
++            // The cell state must be the RT0 projection of exactly the same
++            // face-normal field that CT evolves.  Reconstructing from a
++            // different midpoint sample creates an artificial first-step
++            // inconsistency on irregular triangles.
++            const Vec2 magneticField = reconstructCellMagneticFieldRT0(
++                elem, np, edgp, initBns, innerEdgeCount);
++            initElemUs[elem.ind] = state_from_primitive_vars2D(
++                rho, fieldLoopU, fieldLoopV, 0.0, p,
++                magneticField.x, magneticField.y, 0.0, gam_hcr);
+         }
+         NeighbourService ns = geometryWorld.getNeighbourService();
+         for(const auto& [boundary, ghost]: ns.boundaryToGhostElements){
+@@ -708,59 +778,85 @@ void MHDSolver2D::setInitElemUs() {
+         }
+     }
+     else if(task_type == 8){
+-        std::cout << "SOLVING TASKTYPE 8: The Circular Polarized Alfven Wave Test " << std::endl;
+-        double rho = 1.0;
+-        double p = 0.1;
+-        gam_hcr = 5.0/3.0;
+-        finalTime = 1.0;
+-        cflNum = 0.1;
+-        double alpha = std::numbers::pi_v<double>/6.0; //The wave propagates along the diagonal of the grid, at an angle θ = tan-1(0.5) ≈ 26.6 degrees with respect to the x-axis
++        // This is the 30-degree Toth geometry, not Athena's 26.565-degree
++        // variant.  Its domain must contain an integer number of wavelengths.
++        std::cout << "SOLVING TASKTYPE 8: The Circular Polarized Alfven Wave Test" << std::endl;
++        const double rho = 1.0;
++        const double p = 0.1;
++        const double alpha = std::numbers::pi_v<double> / 6.0;
++        gam_hcr = 5.0 / 3.0;
++        // finalTime is a case-manifest property; the canonical Toth return
++        // test supplies 1.0 explicitly.
++        cflNum = configuredCfl > 0.0 ? configuredCfl : 0.1;
+         periodicBoundaries = true;
+         initElemUs.resize(innerElemCount, std::vector<double>(8, 0.0));
+         initEdgeUs.resize(edgp.edgeCount, std::vector<double>(8, 0.0));
+         initBns.resize(edgp.edgeCount, 0.0);
+         initGhostElemUs.resize(geometryWorld.ghostElemCount, std::vector<double>(8, 0.0));
++        initGhostBNs.resize(geometryWorld.ghostElemCount * 2, 0.0);
++
++        const auto wrap_periodic = [](const double coordinate, const double lo, const double hi) {
++            const double length = hi - lo;
++            double wrapped = std::fmod(coordinate - lo, length);
++            if (wrapped < 0.0) wrapped += length;
++            return lo + wrapped;
++        };
++        const auto state_at = [&](const double x, const double y) {
++            const double xpar = x * std::cos(alpha) + y * std::sin(alpha);
++            const double vperp = 0.1 * std::sin(2.0 * std::numbers::pi_v<double> * xpar);
++            return state_from_primitive_vars2D(rho,
++                -vperp * std::sin(alpha), vperp * std::cos(alpha),
++                0.1 * std::cos(2.0 * std::numbers::pi_v<double> * xpar), p,
++                std::cos(alpha) - vperp * std::sin(alpha),
++                std::sin(alpha) + vperp * std::cos(alpha),
++                0.1 * std::cos(2.0 * std::numbers::pi_v<double> * xpar), gam_hcr);
++        };
++        // B = curl(Az ez); storing endpoint differences of Az makes the
++        // edge-normal field discretely divergence-free from the first step.
++        const auto az_at = [&](const Node& node) {
++            const double xpar = node.pos.x * std::cos(alpha) + node.pos.y * std::sin(alpha);
++            return std::cos(alpha) * node.pos.y - std::sin(alpha) * node.pos.x
++                + 0.1 / (2.0 * std::numbers::pi_v<double>) *
++                    std::cos(2.0 * std::numbers::pi_v<double> * xpar);
++        };
+         for (int i = 0; i < innerElemCount; ++i) {
+-            Element elem = ep.elements[i];
+-            Vec2 centroid = elem.centroid2D;
+-            double x = centroid.x;
+-            double y = centroid.y;
+-            double x_par = x * std::cos(alpha) + y * std::sin(alpha);
+-            double v_perp = 0.1 * std::sin(2.0 * std::numbers::pi_v<double> * x_par);
+-            double v_par = 0.0;
+-            double B_perp = 0.1 * std::sin(2.0 * std::numbers::pi_v<double> * x_par);
+-            double B_par = 1.0;
+-            double u = v_par * std::cos(alpha) - v_perp * std::sin(alpha);
+-            double v = v_perp * std::cos(alpha) + v_par * std::sin(alpha);
+-            double w = 0.1 * std::cos(2.0 * std::numbers::pi_v<double> * x_par);
+-            double Bz = 0.1 * std::cos(2.0 * std::numbers::pi_v<double> * x_par);
+-            double Bx = B_par * std::cos(alpha) - B_perp * std::sin(alpha);
+-            double By = B_perp * std::cos(alpha) + B_par * std::sin(alpha);
+-            initElemUs[elem.ind] = state_from_primitive_vars2D(rho, u, v, w, p, Bx, By, Bz, gam_hcr);
++            const Element& elem = ep.elements[i];
++            initElemUs[elem.ind] = state_at(elem.centroid2D.x, elem.centroid2D.y);
+         }
+-        NeighbourService ns = geometryWorld.getNeighbourService();
+-        for(const auto& [boundary, ghost]: ns.boundaryToGhostElements){
+-            int ghostInd = ghost - innerElemCount;
+-            initGhostElemUs[ghostInd] =  initElemUs[boundary];
++        for (int i = innerElemCount; i < ep.elCount; ++i) {
++            const Element& ghost = ep.elements[i];
++            initGhostElemUs[ghost.ind - innerElemCount] = state_at(
++                wrap_periodic(ghost.centroid2D.x, geometryWorld.minX, geometryWorld.maxX),
++                wrap_periodic(ghost.centroid2D.y, geometryWorld.minY, geometryWorld.maxY));
+         }
+-        initGhostBNs.resize(geometryWorld.ghostElemCount*2, 0.0);
+-        for(int i = 0; i < edgp.edgeCount; ++i){
+-            Edge edge = edgp.edges[i];
+-            double x = edge.midPoint.x;
+-            double y = edge.midPoint.y;
+-            double x_par = x * std::cos(alpha) + y * std::sin(alpha);
+-            double B_perp = 0.1 * std::sin(2.0 * std::numbers::pi_v<double> * x_par);
+-            double B_par = 1.0;
+-            double Bx = B_par * std::cos(alpha) - B_perp * std::sin(alpha);
+-            double By = B_perp * std::cos(alpha) + B_par * std::sin(alpha);
+-            double Bn = Bx * edge.normalVector.x +  By * edge.normalVector.y;
+-            initBns[edge.ind] = Bn;
+-            if(i < innerEdgeCount) {
+-                initBns[edge.ind] = Bn;
+-            }
+-            else{
+-                initGhostBNs[edge.ind - innerEdgeCount] = Bn;
++        for (int i = 0; i < edgp.edgeCount; ++i) {
++            const Edge& edge = edgp.edges[i];
++            const double bn = edgeCtOrientation(edge, np) *
++                              (az_at(np.nodes[edge.nodeInd2]) - az_at(np.nodes[edge.nodeInd1])) /
++                              edge.length;
++            initBns[edge.ind] = bn;
++            if (i < innerEdgeCount) {
++                initBns[edge.ind] = bn;
++            } else {
++                initGhostBNs[edge.ind - innerEdgeCount] = bn;
+             }
++            initEdgeUs[edge.ind] = state_at(
++                wrap_periodic(edge.midPoint.x, geometryWorld.minX, geometryWorld.maxX),
++                wrap_periodic(edge.midPoint.y, geometryWorld.minY, geometryWorld.maxY));
++        }
++        // Project the face-normal discrete curl back to cell centres before
++        // the first Riemann solve.  This keeps the gas state and CT degrees
++        // of freedom mutually consistent on a genuinely irregular mesh.
++        for (int i = 0; i < innerElemCount; ++i) {
++            const Element& elem = ep.elements[i];
++            const Vec2 magneticField = reconstructCellMagneticFieldRT0(
++                elem, np, edgp, initBns, innerEdgeCount);
++            const std::vector<double>& previous = initElemUs[elem.ind];
++            const double cellRho = previous[0];
++            initElemUs[elem.ind] = state_from_primitive_vars2D(
++                cellRho, previous[1] / cellRho, previous[2] / cellRho,
++                previous[3] / cellRho, p, magneticField.x, magneticField.y,
++                previous[7], gam_hcr);
+         }
+     }
+ }
+@@ -780,6 +876,97 @@ void MHDSolver2D::runSolver() {
+     bNs = initBns;
+     ghostElemUs = initGhostElemUs;
+     ghostBNs = initGhostBNs;
++    if (static_cast<int>(ns.ghostElementToBoundaryEdge.size()) != geometryWorld.ghostElemCount) {
++        throw std::runtime_error(
++            "legacy_corrected requires a text mesh: the historical binary World format "
++            "does not serialize one-to-one boundary-edge/ghost mappings");
++    }
++
++    // A corner triangle has two reflected ghosts.  boundaryToGhostElements
++    // is intentionally lossy for legacy compatibility, so corrected boundary
++    // fluxes refresh each ghost from its own boundary edge.
++    const auto periodic_partner_edge = [&](const int boundaryEdge) {
++        const auto top = ns.boundaryEdgeTopToBottom.find(boundaryEdge);
++        if (top != ns.boundaryEdgeTopToBottom.end()) return top->second;
++        for (const auto& [first, second] : ns.boundaryEdgeTopToBottom) {
++            if (second == boundaryEdge) return first;
++        }
++        const auto left = ns.boundaryEdgeLeftToRight.find(boundaryEdge);
++        if (left != ns.boundaryEdgeLeftToRight.end()) return left->second;
++        for (const auto& [first, second] : ns.boundaryEdgeLeftToRight) {
++            if (second == boundaryEdge) return first;
++        }
++        return -1;
++    };
++    const auto refresh_ghost_states = [&]() {
++        for (const auto& [ghostElement, boundaryEdge] : ns.ghostElementToBoundaryEdge) {
++            int sourceEdge = boundaryEdge;
++            if (periodicBoundaries) {
++                sourceEdge = periodic_partner_edge(boundaryEdge);
++                if (sourceEdge < 0) throw std::runtime_error("Periodic boundary edge has no paired edge");
++            }
++            const int sourceElement = edgePool.edges[sourceEdge].neighbourInd1;
++            ghostElemUs.at(ghostElement - innerElemCount) = elemUs.at(sourceElement);
++        }
++    };
++    refresh_ghost_states();
++
++    const auto fail_physical_state = [&](const char* stage, const int iteration, const double time,
++                                         const int element, const double gasPressure,
++                                         const std::vector<double>& state) {
++        std::ofstream dump("OutputData/physical_failure.json");
++        const auto json_number = [&dump](const double value) {
++            if (std::isfinite(value)) dump << value;
++            else dump << "null";
++        };
++        if (dump.is_open()) {
++            dump << std::setprecision(17) << "{\n  \"stage\": \"" << stage << "\",\n"
++                 << "  \"iteration\": " << iteration << ",\n"
++                 << "  \"time\": ";
++            json_number(time);
++            dump << ",\n  \"element\": " << element << ",\n  \"rho\": ";
++            json_number(state.empty() ? std::numeric_limits<double>::quiet_NaN() : state[0]);
++            dump << ",\n  \"pressure\": ";
++            json_number(gasPressure);
++            dump << ",\n  \"state\": [";
++            for (std::size_t component = 0; component < state.size(); ++component) {
++                if (component) dump << ", ";
++                json_number(state[component]);
++            }
++            dump << "]\n}\n";
++        }
++        std::ostringstream message;
++        message << "Nonphysical legacy_corrected state at " << stage << ": iteration=" << iteration
++                << ", time=" << std::setprecision(17) << time << ", element=" << element;
++        throw std::runtime_error(message.str());
++    };
++    const auto ensure_admissible_states = [&](const char* stage, const int iteration, const double time,
++                                               const bool requirePositivePressure) {
++        for (int element = 0; element < innerElemCount; ++element) {
++            const std::vector<double>& state = elemUs[element];
++            bool finite = state.size() == 8;
++            for (const double value : state) finite = finite && std::isfinite(value);
++            if (!finite || !(state[0] > 0.0)) {
++                fail_physical_state(stage, iteration, time, element,
++                                    std::numeric_limits<double>::quiet_NaN(), state);
++            }
++            const double gasPressure = pressure(state, gam_hcr);
++            if (requirePositivePressure && (!std::isfinite(gasPressure) || !(gasPressure > 0.0))) {
++                fail_physical_state(stage, iteration, time, element, gasPressure, state);
++            }
++        }
++    };
++    ensure_admissible_states("initial", 0, startTime, true);
++    const auto integrated_conserved = [&]() {
++        std::vector<double> integral(5, 0.0);
++        for (int element = 0; element < innerElemCount; ++element) {
++            for (int component = 0; component < 5; ++component) {
++                integral[component] += elPool.elements[element].area * elemUs[element][component];
++            }
++        }
++        return integral;
++    };
++    const std::vector<double> initialConserved = integrated_conserved();
+
+     // сделать старые дубликаты состояний (предыдущие состояния) чтобы в новые записывать расчёты
+     std::vector<std::vector<double>> elemUs_prev(initElemUs.size(), std::vector<double>(8, 0.0));
+@@ -798,29 +985,46 @@ void MHDSolver2D::runSolver() {
+         }
+     }
+
+-    // дивергенция магнитного поля
+-    double divergence = computeDivergence();
+-    std::cout << "Init divergence = " << divergence << std::endl;
++    double divergenceReferenceField = 0.0;
++    for (int edgeIndex = 0; edgeIndex < innerEdgeCount; ++edgeIndex) {
++        divergenceReferenceField = std::max(divergenceReferenceField, std::abs(bNs[edgeIndex]));
++    }
++    if (!(divergenceReferenceField > 0.0)) divergenceReferenceField = 1.0;
++    const DivergenceMetrics initialDivergence = computeDivergenceMetrics(divergenceReferenceField);
++    double divergence = initialDivergence.maxAbs;
++    std::cout << "Init max|magnetic flux residual| = " << initialDivergence.maxFlux
++              << "; max|div B| = " << initialDivergence.maxAbs
++              << "; global scaled magnetic-flux imbalance (B_ref = "
++              << initialDivergence.referenceField << ") = " << initialDivergence.maxScaled << std::endl;
+
+-    double h = edgePool.minEdgeLen;
+-    std::cout << "Min h = " << h << std::endl;
++    std::cout << "Min edge length (diagnostic only) = " << edgePool.minEdgeLen << std::endl;
+
+     double currentTime = startTime;
+-    bool foundNan = false; // флаг для поиска NaN-значений
+     int iterations = 0; // число текущих итераций
++    double ctMagneticEnergyChangeSigned = 0.0;
++    double ctMagneticEnergyChangeL1 = 0.0;
++    std::size_t hlldFallbacks = 0;
++    double minCflCandidate = std::numeric_limits<double>::infinity();
++    double maxCflCandidate = 0.0;
++    std::vector<double> integratedBoundaryFlux(5, 0.0);
+
+     // соновной цикл по времени
+     while(currentTime < finalTime) {
+         if(iterations >= MAX_ITERATIONS){
+-            std::cout << "iterations limit!" << std::endl;
+-            break;
++            throw std::runtime_error("legacy_corrected reached MAX_ITERATIONS before final time");
+         }
+
++        ensure_admissible_states("pre-flux", iterations, currentTime, true);
+         elemUs_prev = elemUs; //TODO: implement swap and test it
++        refresh_ghost_states();
+
+         //ghostElemUs_prev.swap(ghostElemUs);
+
+-        tau = std::max(min_tau, tau_from_cfl2D(cflNum, h,  elemUs, gam_hcr));
++        // No lower timestep floor: it would violate the unstructured CFL
++        // condition on sliver triangles.
++        tau = stableTimeStepUnstructured(elemUs, bNs, gam_hcr);
++        minCflCandidate = std::min(minCflCandidate, tau);
++        maxCflCandidate = std::max(maxCflCandidate, tau);
+
+         currentTime += tau;
+
+@@ -846,54 +1050,33 @@ void MHDSolver2D::runSolver() {
+         // инициализируем вектор потоков через рёбра // MHD (HLLD) fluxes (from one element to another "<| -> |>")
+         std::vector<std::vector<double>> fluxes(edgePool.edges.size(), std::vector<double>(8, 0.0));
+         std::vector<std::vector<double>> unrotated_fluxes(edgePool.edges.size(), std::vector<double>(8, 0.0));
+-        #pragma parallel for
+-        for (const auto &edge: edgePool.edges) {
+-            Element neighbour1 = elPool.elements[edge.neighbourInd1];
+-            if(neighbour1.is_boundary && edge.neighbourInd2 == -1){
+-                std::vector<double> U1 = rotateStateFromAxisToNormal(elemUs_prev[neighbour1.ind], edge.normalVector);
+-                int ghostInd = ns.boundaryToGhostElements[neighbour1.ind] - innerElemCount;
+-                std::vector<double> U2 = rotateStateFromAxisToNormal(ghostElemUs[ghostInd], edge.normalVector);
+-                fluxes[edge.ind] = HLLD_flux(U1, U2, gam_hcr);
+-                unrotated_fluxes[edge.ind] = fluxes[edge.ind];
+-                fluxes[edge.ind] = rotateStateFromNormalToAxisX(fluxes[edge.ind], edge.normalVector);
+-            }
+-            else if(neighbour1.is_ghost && edge.neighbourInd2 == -1){
+-                //continue; //TODO
+-                std::vector<double> U1 = rotateStateFromAxisToNormal(ghostElemUs[neighbour1.ind - innerElemCount], edge.normalVector);
+-                fluxes[edge.ind] = HLLD_flux(U1, U1, gam_hcr);
+-                unrotated_fluxes[edge.ind] = HLLD_flux(U1, U1, gam_hcr);
+-                fluxes[edge.ind] = rotateStateFromNormalToAxisX(fluxes[edge.ind], edge.normalVector);
+-            }
+-            else{
+-                std::vector<double> U1 = rotateStateFromAxisToNormal(elemUs_prev[neighbour1.ind], edge.normalVector);
+-                Element neighbour2 = elPool.elements[edge.neighbourInd2];
+-                std::vector<double> U2 = rotateStateFromAxisToNormal(elemUs_prev[neighbour2.ind], edge.normalVector);
+-                fluxes[edge.ind] = HLLD_flux(U1, U2, gam_hcr);
+-                unrotated_fluxes[edge.ind] = fluxes[edge.ind];
+-                fluxes[edge.ind] = rotateStateFromNormalToAxisX(fluxes[edge.ind], edge.normalVector);
++        // Reflected auxiliary edges supply boundary data only.  They are not
++        // faces of a physical control volume and must never enter the flux or
++        // CT updates.
++        for (int edgeIndex = 0; edgeIndex < innerEdgeCount; ++edgeIndex) {
++            const Edge& edge = edgePool.edges[edgeIndex];
++            const Element& neighbour1 = elPool.elements[edge.neighbourInd1];
++            std::vector<double> U1 = rotateStateFromAxisToNormal(elemUs_prev[neighbour1.ind], edge.normalVector);
++            std::vector<double> U2;
++            if (edge.neighbourInd2 == -1) {
++                const int ghostInd = ns.boundaryEdgeToGhostElement.at(edge.ind) - innerElemCount;
++                U2 = rotateStateFromAxisToNormal(ghostElemUs.at(ghostInd), edge.normalVector);
++            } else {
++                U2 = rotateStateFromAxisToNormal(elemUs_prev[edge.neighbourInd2], edge.normalVector);
+             }
++            // A Riemann interface has one Bn: CT owns it on the edge.
++            U1[4] += 0.5 * (bNs[edge.ind] * bNs[edge.ind] - U1[5] * U1[5]);
++            U2[4] += 0.5 * (bNs[edge.ind] * bNs[edge.ind] - U2[5] * U2[5]);
++            U1[5] = bNs[edge.ind];
++            U2[5] = bNs[edge.ind];
++            unrotated_fluxes[edge.ind] = HLLD_flux_corrected(U1, U2, gam_hcr, &hlldFallbacks);
++            fluxes[edge.ind] = rotateStateFromNormalToAxisX(unrotated_fluxes[edge.ind], edge.normalVector);
+         }
+-
+-        if(freeFLowBoundaries) {
+-            for (const auto &[top, bot]: ns.boundaryElemTopToBottom) {
+-                Element elGhostTop = elPool.elements[ns.boundaryToGhostElements[top]];
+-                for (const auto &edgeInd: elGhostTop.edgeIndexes) {
+-                    Edge edge = edgePool.edges[edgeInd];
+-                    if (edge.is_ghost) {
+-                        int corspEdge = ns.edgeToGhostEdges[edge.ind];
+-                        unrotated_fluxes[edge.ind] = (-1.0) * unrotated_fluxes[corspEdge];
+-                        fluxes[edge.ind] = rotateStateFromAxisToNormal(unrotated_fluxes[edge.ind], edge.normalVector);
+-                    }
+-                }
+-                Element elGhostBot = elPool.elements[ns.boundaryToGhostElements[bot]];
+-                for (const auto &edgeInd: elGhostBot.edgeIndexes) {
+-                    Edge edge = edgePool.edges[edgeInd];
+-                    if (edge.is_ghost) {
+-                        int corspEdge = ns.edgeToGhostEdges[edge.ind];
+-                        unrotated_fluxes[edge.ind] = (-1.0) * unrotated_fluxes[corspEdge];
+-                        fluxes[edge.ind] = rotateStateFromAxisToNormal(unrotated_fluxes[edge.ind], edge.normalVector);
+-                    }
+-                }
++        for (int edgeIndex = 0; edgeIndex < innerEdgeCount; ++edgeIndex) {
++            const Edge& edge = edgePool.edges[edgeIndex];
++            if (edge.neighbourInd2 != -1) continue;
++            for (int component = 0; component < 5; ++component) {
++                integratedBoundaryFlux[component] += tau * edge.length * fluxes[edgeIndex][component];
+             }
+         }
+         // по явной схеме обновляем газовые величины
+@@ -904,295 +1087,146 @@ void MHDSolver2D::runSolver() {
+             if(elem.edgeIndexes.size() != 3){
+                 std::cout << "Bad edge vector size != 3" << std::endl;
+             }
+-            if(!elem.is_boundary || freeFLowBoundaries == false) {
+-                for (int edgeIndex: elem.edgeIndexes) {
+-                    Edge edge_j = edgePool.edges[edgeIndex];
+-                    if (std::abs(edge_j.length) < 1e-16) {
+-                        std::cout << "BAD EDGE LENGTH = 0!! " << edge_j.length << std::endl;
+-                        Node node1 = nodePool.getNode(edge_j.nodeInd1);
+-                        Node node2 = nodePool.getNode(edge_j.nodeInd2);
+-                        std::cout << "edge: " << edge_j.ind << std::endl;
+-                        std::cout << "node1 # " << edge_j.nodeInd1 << " { " << node1.pos.x << ", " << node1.pos.y << " } \n";
+-                        std::cout << "node2 # " << edge_j.nodeInd2 << " { " << node2.pos.x << ", " << node2.pos.y << " } \n";
+-                        Element elem1 = elPool.elements[edge_j.neighbourInd1];
+-                        std::cout << "neigel1 # " << elem1.ind << " isBoundary = " << elem1.is_boundary
+-                                  << " , isGhost = " << elem1.is_ghost << std::endl;
+-                        std::cout << "neigel2 # " << edge_j.neighbourInd2 << std::endl;
+-                        std::cin.get();
+-
+-                    }
+-                    if (edge_j.neighbourInd1 == i) {
+-                        fluxSum = fluxSum + edge_j.length * fluxes[edgeIndex];
+-                    } else if (edge_j.neighbourInd2 == i) {
+-                        fluxSum = fluxSum - edge_j.length * fluxes[edgeIndex];
+-                    } else {
+-                        //std::cerr << "No matching edge..."  << std::endl;
+-                    }
++            // The true boundary Riemann flux is already in fluxes; physical
++            // boundary cells use the same FV update as interior cells.
++            for (const int edgeIndex: elem.edgeIndexes) {
++                if (edgeIndex < 0 || edgeIndex >= innerEdgeCount) {
++                    throw std::runtime_error("Physical element references a ghost edge during FV update");
+                 }
+-                elemUs[i] = elemUs_prev[i] - tau / elem.area * fluxSum;
+-            }
+-            else{
+-                int ghostInd = ns.boundaryToGhostElements[i];
+-                int ghostIndForState = ns.boundaryToGhostElements[i] - innerElemCount;
+-                Element ghostEl = elPool.elements[ghostInd];
+-                std::vector<int> commonEdges = findCommonElements(ghostEl.edgeIndexes, elem.edgeIndexes);
+-                if(commonEdges.size() != 1){
+-                    std::cout << "NO COMMON EDGES!" << std::endl;
+-                    std::cout << elem.edgeIndexes[0] << ",  "<< elem.edgeIndexes[1] << ",  "<< elem.edgeIndexes[2] << "; vs/s ghost: " << ghostEl.edgeIndexes[0] << ",  " << ghostEl.edgeIndexes[1] << ",  " << ghostEl.edgeIndexes[2] << std::endl;
+-                }
+-                int commonEdgeInd = commonEdges[0];
+-                double area = elem.area * 2.0;
+-
+-                for(const auto& edgeInd: elem.edgeIndexes){
+-                    if(edgeInd == commonEdgeInd){
+-                        continue;
+-                    }
+-                    Edge edge_j = edgePool.edges[edgeInd];
+-                    if (std::abs(edge_j.length) < 1e-16) {
+-                        std::cout << "BAD EDGE LENGTH = 0!! " << edge_j.length << std::endl;
+-                        Node node1 = nodePool.getNode(edge_j.nodeInd1);
+-                        Node node2 = nodePool.getNode(edge_j.nodeInd2);
+-                        std::cout << "edge: " << edge_j.ind << std::endl;
+-                        std::cout << "node1 # " << edge_j.nodeInd1 << " { " << node1.pos.x << ", " << node1.pos.y << " } \n";
+-                        std::cout << "node2 # " << edge_j.nodeInd2 << " { " << node2.pos.x << ", " << node2.pos.y << " } \n";
+-                        Element elem1 = elPool.elements[edge_j.neighbourInd1];
+-                        std::cout << "neigel1 # " << elem1.ind << " isBoundary = " << elem1.is_boundary
+-                                  << " , isGhost = " << elem1.is_ghost << std::endl;
+-                        std::cout << "neigel2 # " << edge_j.neighbourInd2 << std::endl;
+-                        std::cin.get();
+-                    }
+-                    if (edge_j.neighbourInd1 == i) {
+-                        fluxSum = fluxSum + edge_j.length * fluxes[edgeInd];
+-                    } else if (edge_j.neighbourInd2 == i) {
+-                        fluxSum = fluxSum - edge_j.length * fluxes[edgeInd];
+-                    } else {
+-                        std::cerr << "No matching edge..."  << std::endl;
+-                    }
++                const Edge& edge = edgePool.edges[edgeIndex];
++                if (edge.neighbourInd1 == i) {
++                    fluxSum = fluxSum + edge.length * fluxes[edgeIndex];
++                } else if (edge.neighbourInd2 == i) {
++                    fluxSum = fluxSum - edge.length * fluxes[edgeIndex];
++                } else {
++                    throw std::runtime_error("Physical element does not own one of its edges");
+                 }
+-                for(const auto& ghostEdgeInd: ghostEl.edgeIndexes){
+-                    if(ghostEdgeInd == commonEdgeInd){
+-                        continue;
+-                    }
+-                    Edge edge_j = edgePool.edges[ghostEdgeInd];
+-                    if (std::abs(edge_j.length) < 1e-16) {
+-                        std::cout << "BAD EDGE LENGTH = 0!! " << edge_j.length << std::endl;
+-                        Node node1 = nodePool.getNode(edge_j.nodeInd1);
+-                        Node node2 = nodePool.getNode(edge_j.nodeInd2);
+-                        std::cout << "edge: " << edge_j.ind << std::endl;
+-                        std::cout << "node1 # " << edge_j.nodeInd1 << " { " << node1.pos.x << ", " << node1.pos.y << " } \n";
+-                        std::cout << "node2 # " << edge_j.nodeInd2 << " { " << node2.pos.x << ", " << node2.pos.y << " } \n";
+-                        Element elem1 = elPool.elements[edge_j.neighbourInd1];
+-                        std::cout << "neigel1 # " << elem1.ind << " isBoundary = " << elem1.is_boundary
+-                                  << " , isGhost = " << elem1.is_ghost << std::endl;
+-                        std::cout << "neigel2 # " << edge_j.neighbourInd2 << std::endl;
+-                        std::cin.get();
+-                    }
+-                    if (edge_j.neighbourInd1 == ghostEl.ind) {
+-                        fluxSum = fluxSum + edge_j.length * fluxes[ghostEdgeInd];
+-                    } else if (edge_j.neighbourInd2 == ghostEl.ind) {
+-                        fluxSum = fluxSum - edge_j.length * fluxes[ghostEdgeInd];
+-                    } else {
+-                        std::cerr << "No matching edge..."  << std::endl;
+-                    }
+-                }
+-                elemUs[i] = elemUs_prev[i] - tau / area * fluxSum;
+             }
++            elemUs[i] = elemUs_prev[i] - tau / elem.area * fluxSum;
+         }
+
+
+-        // г.у (фикт ячейки) поставить перед выч-м потоков
+-        if(periodicBoundaries){
+-            // периодическое г.у.
+-            for(const auto& [top, bot]: ns.boundaryElemTopToBottom){
+-                int ghostIndTop = ns.boundaryToGhostElements[top] - innerElemCount;
+-                int ghostIndBot = ns.boundaryToGhostElements[bot] - innerElemCount;
+-                ghostElemUs[ghostIndTop] = elemUs[bot];
+-                ghostElemUs[ghostIndBot] = elemUs[top];
+-            }
+-            for(const auto& [left, right]: ns.boundaryElemLeftToRight){
+-                int ghostIndLeft = ns.boundaryToGhostElements[left] - innerElemCount;
+-                int ghostIndRight = ns.boundaryToGhostElements[right] - innerElemCount;
+-                ghostElemUs[ghostIndLeft] =  elemUs[right];
+-                ghostElemUs[ghostIndRight] = elemUs[left];
+-            }
+-        }
+-        else{
+-            // копируем значения в соответствующие фантомные ячейки (условие free flow)
+-            for(const auto& [boundary, ghost] : ns.boundaryToGhostElements){
+-                int ghostInd = ghost - innerElemCount;
+-                ghostElemUs[ghostInd] = elemUs[boundary];
+-            }
+-        }
++        ensure_admissible_states("post-gas", iterations, currentTime, true);
++        refresh_ghost_states();
+
+-        for(auto& edge: edgePool.edges){
+-            Element neighbour1 = elPool.elements[edge.neighbourInd1];
+-            if(neighbour1.is_ghost){
+-                edgeUs[edge.ind] = ghostElemUs[neighbour1.ind - innerElemCount];
+-            }else if(neighbour1.is_boundary){
+-                std::vector<double> U1 = elemUs[neighbour1.ind];
+-                int ghostInd = ns.boundaryToGhostElements[neighbour1.ind] - innerElemCount;
+-                std::vector<double> U2 = ghostElemUs[ghostInd];
+-                edgeUs[edge.ind] = (1.0/(std::sqrt(U1[0]) + std::sqrt(U2[0]))) * (std::sqrt(U1[0]) * U1 + std::sqrt(U2[0]) * U2);
+-            }else{
+-                Element neighbour2 = elPool.elements[edge.neighbourInd2];
+-                std::vector<double> U1 = elemUs[neighbour1.ind];
+-                std::vector<double> U2 = elemUs[neighbour2.ind];
+-                edgeUs[edge.ind] = (1.0/(std::sqrt(U1[0]) + std::sqrt(U2[0]))) * (std::sqrt(U1[0]) * U1 + std::sqrt(U2[0]) * U2);
+-            }
++        // The CT electromotive force is the tangential magnetic flux from the
++        // same Riemann solve used by the gas update.  Ghost/reflection edges
++        // have no physical flux and are deliberately excluded.
++        std::vector<double> nodeMagDiffs(nodePool.nodeCount, 0.0);
++        std::vector<int> nodeEmfCounts(nodePool.nodeCount, 0);
++        for (int edgeIndex = 0; edgeIndex < innerEdgeCount; ++edgeIndex) {
++            const Edge& edge = edgePool.edges[edgeIndex];
++            const double emfProxy = unrotated_fluxes[edgeIndex][6];
++            nodeMagDiffs[edge.nodeInd1] += emfProxy;
++            nodeMagDiffs[edge.nodeInd2] += emfProxy;
++            ++nodeEmfCounts[edge.nodeInd1];
++            ++nodeEmfCounts[edge.nodeInd2];
+         }
+-
+-        //!!! добавить г.у.
+-        //корректируем магнитные величины
+-        //находим узловые значения нужных магнитных разностей //(v x B)z в узлах
+-        std::vector<double> nodeMagDiffs(nodePool.nodeCount, 0.0); //(v x B)z в узлах
+-//#pragma omp parallel for
+-        for (const auto &node: nodePool.nodes) {
+-            int tmp_count = 0;
+-            for (const auto &neighbourEdgeInd: ns.getEdgeNeighborsOfNode(node.ind)) {
+-                // добавить проверку на совпадения направлений в-ра скорости и нарпавляющего ребра
+-                Edge neighbourEdge = edgePool.edges[neighbourEdgeInd];
+-                if(elPool.elements[neighbourEdge.neighbourInd1].is_ghost && neighbourEdge.neighbourInd2 == -1){
+-                    //std::cout << "SEE A GHOST!" << std::endl;
+-                    //continue;
+-                }
+-                Node node1 = nodePool.getNode(neighbourEdge.nodeInd1);
+-                Node node2 = nodePool.getNode(neighbourEdge.nodeInd2);
+-                int inflowOrientation = 1;
+-                double u = edgeUs[neighbourEdgeInd][1]/edgeUs[neighbourEdgeInd][0];
+-                double v = edgeUs[neighbourEdgeInd][2]/edgeUs[neighbourEdgeInd][0];
+-                if(neighbourEdge.nodeInd1 == node.ind){
+-                    //inflowOrientation = sgn((u*(node1.pos.x - node2.pos.x) + v*(node1.pos.y - node2.pos.y)));
+-                    //std::cout << "scalar mult = " << (u*(node1.pos.x - node2.pos.x) + v*(node1.pos.y - node2.pos.y)) <<" , orient = " << inflowOrientation <<std::endl;
+-                    //std::cin.get();
+-                }
+-                else if(neighbourEdge.nodeInd2 == node.ind){
+-                    //inflowOrientation =  sgn((u*(node2.pos.x - node1.pos.x) + v*(node2.pos.y - node1.pos.y)));
+-                    //std::cout << "scalar mult = " <<  (u*(node2.pos.x - node1.pos.x) + v*(node2.pos.y - node1.pos.y))  <<" , orient = " << inflowOrientation <<std::endl;
+-                    //std::cin.get();
+-                }
+-                if(inflowOrientation > 0) {
+-                    nodeMagDiffs[node.ind] += unrotated_fluxes[neighbourEdgeInd][6];
+-                    ++tmp_count;
+-                }
+-            }
+-            if (tmp_count) {
+-                nodeMagDiffs[node.ind] /= tmp_count;
++        for (int nodeIndex = 0; nodeIndex < nodePool.nodeCount; ++nodeIndex) {
++            if (nodeEmfCounts[nodeIndex] > 0) {
++                nodeMagDiffs[nodeIndex] /= static_cast<double>(nodeEmfCounts[nodeIndex]);
+             }
+         }
+
+-        //находим новое значение Bn в ребре
++        if (periodicBoundaries) {
++            // Boundary nodes represent the same periodic point.  Average all
++            // equivalence classes (including corners) before Faraday update.
++            std::vector<int> parent(nodePool.nodeCount);
++            for (int nodeIndex = 0; nodeIndex < nodePool.nodeCount; ++nodeIndex) parent[nodeIndex] = nodeIndex;
++            const auto find_root = [&parent](int node) {
++                int root = node;
++                while (parent[root] != root) root = parent[root];
++                while (parent[node] != node) {
++                    const int next = parent[node];
++                    parent[node] = root;
++                    node = next;
++                }
++                return root;
++            };
++            const auto unite = [&parent, &find_root](const int first, const int second) {
++                const int firstRoot = find_root(first);
++                const int secondRoot = find_root(second);
++                if (firstRoot != secondRoot) parent[secondRoot] = firstRoot;
++            };
++            for (const auto& [left, right] : ns.boundaryNodeLeftToRight) unite(left, right);
++            for (const auto& [top, bottom] : ns.boundaryNodeTopToBottom) unite(top, bottom);
++            std::vector<double> classSums(nodePool.nodeCount, 0.0);
++            std::vector<int> classCounts(nodePool.nodeCount, 0);
++            for (int nodeIndex = 0; nodeIndex < nodePool.nodeCount; ++nodeIndex) {
++                const int root = find_root(nodeIndex);
++                classSums[root] += nodeMagDiffs[nodeIndex];
++                ++classCounts[root];
++            }
++            for (int nodeIndex = 0; nodeIndex < nodePool.nodeCount; ++nodeIndex) {
++                const int root = find_root(nodeIndex);
++                nodeMagDiffs[nodeIndex] = classSums[root] / static_cast<double>(classCounts[root]);
++            }
++        }
++
++        // Faraday update is defined only on physical faces.  Reflected
++        // auxiliary edges are boundary-data storage, not CT degrees of
++        // freedom.
+         std::vector<double> bNs_prev(bNs);
+-        for (int i = 0; i < edgePool.edgeCount; ++i) {
+-            Edge edge = edgePool.edges[i];
+-            bNs[edge.ind] = bNs_prev[edge.ind] + (tau / edge.length) * (nodeMagDiffs[edge.nodeInd2] -
+-                                                        nodeMagDiffs[edge.nodeInd1]);
+-        }
+-
+-        //сносим Bn в центр элемента
+-//#pragma omp parallel for
++        for (int i = 0; i < innerEdgeCount; ++i) {
++            const Edge& edge = edgePool.edges[i];
++            // unrotated_fluxes[6] is G=(v x B)_z=-E_z in the local
++            // (normal,tangent,z) system.  The explicit sign makes Stokes'
++            // update invariant to whether the input triangle is CW or CCW.
++            bNs[edge.ind] = advanceFaceNormalBFromCt(
++                edge, nodePool, bNs_prev[edge.ind], tau,
++                nodeMagDiffs[edge.nodeInd1], nodeMagDiffs[edge.nodeInd2]);
++        }
++
++        // Reconstruct the cell-centred magnetic field from the CT-owned
++        // normal fluxes with the same RT0 operator used at initialization.
++        // Explicit edge ownership avoids the historical dependence on an
++        // incidental node ordering.
+         for (int i = 0; i < innerElemCount; ++i) {
+-            Element elem = elPool.elements[i];
+-            Vec2 centroid = getElementCentroid2D(elem, nodePool);
+-            if(elem.edgeIndexes.empty()){
+-                std::cerr << "Empty element! (no edges)" << std::endl;
+-            }
+-            double temp_sum_Bx = 0.0;
+-            double temp_sum_By = 0.0;
+-            for (const auto &edgeInd: elem.edgeIndexes) {
+-                Edge edge = edgePool.edges[edgeInd];
+-                Vec2 cTe = edge.midPoint - centroid;
+-                double scmult = cTe*edge.normalVector;
+-                if (scmult > 0.0/*edge.neighbourInd1 == elem.ind*/) {
+-                    // у первого соседа в эдже заданы ноды в порядке полодительного обхода и нормаль тоже
+-                    const auto nodeInElemInd = std::find(elem.nodeIndexes.begin(), elem.nodeIndexes.end(),
+-                                                         edge.nodeInd1);
+-                    int node_before_ind =
+-                            nodeInElemInd == elem.nodeIndexes.begin() ? elem.nodeIndexes[elem.dim - 1] : *(
+-                                    nodeInElemInd - 1);
+-                    //std::cout << "edge of nodes = {"<< edge.nodeInd1 << " , " << edge.nodeInd2 << " } current ind = " << edge.nodeInd1 <<" Elem's node indexes: " << elem.nodeIndexes[0] << " "<< elem.nodeIndexes[1] << " "<< elem.nodeIndexes[2] << ", node_beforeInd = " << node_before_ind << std::endl;
+-                    //std::cin.get();
+-                    Node node_before = nodePool.getNode(node_before_ind);
+-                    if(edgeInd < innerEdgeCount) {
+-                        temp_sum_Bx += bNs[edgeInd] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        temp_sum_By += bNs[edgeInd] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                    else{
+-                        continue;
+-                        temp_sum_Bx += ghostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        temp_sum_By += ghostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                } else if(scmult < 0.0/*edge.neighbourInd2 != -1*/){
+-                    // а вот для второго нужно умножать на -1 и в обратном порядке
+-                    const auto nodeInElemInd = std::find(elem.nodeIndexes.begin(), elem.nodeIndexes.end(),
+-                                                         edge.nodeInd2);
+-                    int node_before_ind =
+-                            nodeInElemInd == elem.nodeIndexes.begin() ? elem.nodeIndexes[elem.dim - 1] : *(
+-                                    nodeInElemInd - 1);
+-                    Node node_before = nodePool.getNode(node_before_ind);
+-                    if(edgeInd < innerEdgeCount) {
+-                        temp_sum_Bx -= bNs[edgeInd] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        temp_sum_By -= bNs[edgeInd] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                    else{
+-                        continue;
+-                        temp_sum_Bx -= ghostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.x - node_before.pos.x);
+-                        temp_sum_By -= ghostBNs[edgeInd - innerEdgeCount] * edge.length / (2 * elem.area) * (centroid.y - node_before.pos.y);
+-                    }
+-                }
+-            }
+-            if(elem.ind < innerElemCount) {
+-                elemUs[elem.ind][5] = temp_sum_Bx;
+-                elemUs[elem.ind][6] = temp_sum_By;
+-            }
+-            else{
+-               // ghostElemUs_prev[elem.ind - innerElemCount][5] = temp_sum_Bx;
+-               // ghostElemUs_prev[elem.ind - innerElemCount][6] = temp_sum_By;
+-            }
+-        }
+-
+-        // г.у (фикт ячейки) поставить перед выч-м потоков
+-        if(periodicBoundaries){
+-            // периодическое г.у.
+-            for(const auto& [top, bot]: ns.boundaryElemTopToBottom){
+-                int ghostIndTop = ns.boundaryToGhostElements[top] - innerElemCount;
+-                int ghostIndBot = ns.boundaryToGhostElements[bot] - innerElemCount;
+-                ghostElemUs[ghostIndTop] =  elemUs[bot];
+-                ghostElemUs[ghostIndBot] = elemUs[top];
+-            }
+-            for(const auto& [left, right]: ns.boundaryElemLeftToRight){
+-                int ghostIndLeft = ns.boundaryToGhostElements[left] - innerElemCount;
+-                int ghostIndRight = ns.boundaryToGhostElements[right] - innerElemCount;
+-                ghostElemUs[ghostIndLeft] =  elemUs[right];
+-                ghostElemUs[ghostIndRight] = elemUs[left];
+-            }
+-        }
+-        else{
+-            // копируем значения в соответствующие фантомные ячейки (условие free flow)
+-            for(const auto& [boundary, ghost] : ns.boundaryToGhostElements){
+-                int ghostInd = ghost - innerElemCount;
+-                ghostElemUs[ghostInd] = elemUs[boundary];
+-            }
+-        }
+-
+-//#pragma parallel for
+-        for(const auto& u: elemUs){
+-            for(const auto& val: u){
+-                if(std::isnan(val)){
+-                    foundNan = true;
+-                    break;
+-                }
+-            }
+-        }
+-        if(foundNan){
+-            std::cout << "Found a nan VALUE!!! Exiting the solver..." << std::endl;
+-            break;
+-        }
++            const Element& elem = elPool.elements[i];
++            const double oldMagneticEnergy =
++                0.5 * (elemUs[i][5] * elemUs[i][5] + elemUs[i][6] * elemUs[i][6] +
++                       elemUs[i][7] * elemUs[i][7]);
++            const Vec2 magneticField = reconstructCellMagneticFieldRT0(
++                elem, nodePool, edgePool, bNs, innerEdgeCount);
++            elemUs[i][5] = magneticField.x;
++            elemUs[i][6] = magneticField.y;
++            const double newMagneticEnergy =
++                0.5 * (elemUs[i][5] * elemUs[i][5] + elemUs[i][6] * elemUs[i][6] +
++                       elemUs[i][7] * elemUs[i][7]);
++            // E was already updated by the conservative MHD face flux.
++            // Do not overwrite that update to preserve p: a CT-induced
++            // change of reconstructed magnetic energy is a numerical
++            // magnetic/internal-energy exchange and must remain visible
++            // in p while the periodic total-energy balance stays closed.
++            const double magneticEnergyChange = newMagneticEnergy - oldMagneticEnergy;
++            ctMagneticEnergyChangeSigned += elem.area * magneticEnergyChange;
++            ctMagneticEnergyChangeL1 += elem.area * std::abs(magneticEnergyChange);
++        }
++
++        ensure_admissible_states("post-ct", iterations, currentTime, true);
++        refresh_ghost_states();
+         ++iterations;
+     }
+     writeVTU("OutputData/tmpres_" + std::to_string(iterations) + ".vtu", ghostOutput);
+-    std::cout << "Final time = " << currentTime << "; iterations = "<< iterations<<  std::endl;
+-    divergence = computeDivergence();
+-    std::cout << "Final divergence = " << divergence << std::endl;
++    std::cout << std::setprecision(17) << "Final time = " << currentTime
++              << "; iterations = " << iterations << std::endl;
++    const DivergenceMetrics finalDivergence = computeDivergenceMetrics(divergenceReferenceField);
++    const std::vector<double> finalConserved = integrated_conserved();
++    std::cout << "Final max|magnetic flux residual| = " << finalDivergence.maxFlux
++              << "; max|div B| = " << finalDivergence.maxAbs
++              << "; global scaled magnetic-flux imbalance = " << finalDivergence.maxScaled << std::endl;
++    std::cout << "CT reconstruction magnetic-energy change: signed = " << ctMagneticEnergyChangeSigned
++              << "; L1 = " << ctMagneticEnergyChangeL1 << std::endl;
++    std::cout << "HLLD-to-HLLE fallbacks = " << hlldFallbacks
++              << "; CFL candidate range = [" << minCflCandidate << ", " << maxCflCandidate << "]" << std::endl;
++    for (int component = 0; component < 5; ++component) {
++        const double stateChange = finalConserved[component] - initialConserved[component];
++        const double balanceResidual = stateChange + integratedBoundaryFlux[component];
++        std::cout << "Conservation component " << component
++                  << ": delta=" << stateChange
++                  << "; boundary_flux_integral=" << integratedBoundaryFlux[component]
++                  << "; residual=" << balanceResidual << std::endl;
++    }
+ }
+
+
+@@ -1290,37 +1324,150 @@ void MHDSolver2D::writeVTU(const std::string& filename, const bool& ghost) {
+     file.close();
+ }
+
++double edgeCtOrientation(const Edge& edge, const NodePool& nodePool) {
++    if (!(edge.length > 0.0) || !std::isfinite(edge.length)) {
++        throw std::runtime_error("CT edge has an invalid length");
++    }
++    const Node first = nodePool.getNode(edge.nodeInd1);
++    const Node second = nodePool.getNode(edge.nodeInd2);
++    const double tangentX = (second.pos.x - first.pos.x) / edge.length;
++    const double tangentY = (second.pos.y - first.pos.y) / edge.length;
++    const double ctTangentX = -edge.normalVector.y;
++    const double ctTangentY = edge.normalVector.x;
++    const double orientation = tangentX * ctTangentX + tangentY * ctTangentY;
++    if (!std::isfinite(orientation) || std::abs(std::abs(orientation) - 1.0) > 1.0e-12) {
++        throw std::runtime_error("CT edge tangent and normal are not an oriented orthonormal pair");
++    }
++    return orientation > 0.0 ? 1.0 : -1.0;
++}
+
+-double MHDSolver2D::computeDivergence() {
+-    double max_divergence = 0.0;
+-    ElementPool elPool = geometryWorld.getElementPool();
+-    NodePool nodePool = geometryWorld.getNodePool();
+-    EdgePool edgePool = geometryWorld.getEdgePool();
+-    // 1/S Sum(l*Bn)
+-    for (int i = 0; i < innerElemCount; ++i) {
+-        Element elem = elPool.elements[i];
+-        Vec2 centroid = getElementCentroid2D(elem, nodePool);
+-        if (elem.edgeIndexes.empty()) {
+-            std::cerr << "Empty element! (no edges)" << std::endl;
+-        }
+-        double divergence = 0.0;
+-        for (const auto &edgeInd: elem.edgeIndexes) {
+-            Edge edge = edgePool.edges[edgeInd];
+-            Vec2 cTe = edge.midPoint - centroid;
+-            double scmult = cTe*edge.normalVector;
+-            if (scmult > 0) {
+-                divergence += edge.length * bNs[edgeInd];
+-            } else {
+-                divergence -= edge.length * bNs[edgeInd];
++double advanceFaceNormalBFromCt(const Edge& edge, const NodePool& nodePool,
++                                const double previousNormalB, const double dt,
++                                const double firstNodeG, const double secondNodeG) {
++    if (!std::isfinite(previousNormalB) || !(dt >= 0.0) || !std::isfinite(dt) ||
++        !std::isfinite(firstNodeG) || !std::isfinite(secondNodeG)) {
++        throw std::runtime_error("CT Faraday update received a non-finite value");
++    }
++    return previousNormalB + edgeCtOrientation(edge, nodePool) * dt / edge.length *
++           (secondNodeG - firstNodeG);
++}
++
++Vec2 reconstructCellMagneticFieldRT0(const Element& element,
++                                     const NodePool& nodePool,
++                                     const EdgePool& edgePool,
++                                     const std::vector<double>& faceNormalB,
++                                     const int physicalEdgeCount) {
++    if (element.dim != 3 || element.nodeIndexes.size() != 3 ||
++        !(element.area > 0.0) || !std::isfinite(element.area)) {
++        throw std::runtime_error("RT0 reconstruction requires a nondegenerate triangular element");
++    }
++    if (physicalEdgeCount < 0 || physicalEdgeCount > edgePool.edgeCount ||
++        static_cast<int>(faceNormalB.size()) < physicalEdgeCount) {
++        throw std::runtime_error("Invalid physical edge field for RT0 reconstruction");
++    }
++
++    const Vec2 centroid = getElementCentroid2D(element, nodePool);
++    Vec2 field{0.0, 0.0};
++    for (const int edgeIndex : element.edgeIndexes) {
++        if (edgeIndex < 0 || edgeIndex >= physicalEdgeCount) {
++            throw std::runtime_error("Physical element references a ghost edge during RT0 reconstruction");
++        }
++        const Edge& edge = edgePool.edges[edgeIndex];
++        int oppositeNode = -1;
++        for (const int nodeIndex : element.nodeIndexes) {
++            if (nodeIndex != edge.nodeInd1 && nodeIndex != edge.nodeInd2) {
++                if (oppositeNode != -1) {
++                    throw std::runtime_error("Non-triangular edge/node relation during RT0 reconstruction");
++                }
++                oppositeNode = nodeIndex;
+             }
+         }
+-        divergence /= elem.area;
+-        if(divergence > max_divergence){
+-            max_divergence = divergence;
++        if (oppositeNode < 0) {
++            throw std::runtime_error("Edge does not belong to its RT0 reconstruction element");
+         }
++
++        double outwardSign = 0.0;
++        if (edge.neighbourInd1 == element.ind) {
++            outwardSign = 1.0;
++        } else if (edge.neighbourInd2 == element.ind) {
++            outwardSign = -1.0;
++        } else {
++            throw std::runtime_error("Element does not own an edge during RT0 reconstruction");
++        }
++        const Node opposite = nodePool.getNode(oppositeNode);
++        const double coefficient = outwardSign * faceNormalB[edgeIndex] * edge.length /
++                                   (2.0 * element.area);
++        field.x += coefficient * (centroid.x - opposite.pos.x);
++        field.y += coefficient * (centroid.y - opposite.pos.y);
++    }
++    return field;
++}
++
++DivergenceMetrics MHDSolver2D::computeDivergenceMetrics(double referenceField) {
++    const ElementPool elPool = geometryWorld.getElementPool();
++    const NodePool nodePool = geometryWorld.getNodePool();
++    const EdgePool edgePool = geometryWorld.getEdgePool();
++    const int physicalElementCount = elPool.elCount - geometryWorld.ghostElemCount;
++    const int physicalEdgeCount = edgePool.edgeCount - geometryWorld.ghostElemCount * 2;
++    if (physicalElementCount < 0 || physicalEdgeCount < 0 ||
++        static_cast<int>(bNs.size()) < physicalEdgeCount) {
++        throw std::runtime_error("Invalid geometry or CT field while measuring divergence");
++    }
++
++    DivergenceMetrics metrics;
++    if (referenceField > 0.0 && std::isfinite(referenceField)) {
++        metrics.referenceField = referenceField;
++    } else {
++        for (int edgeIndex = 0; edgeIndex < physicalEdgeCount; ++edgeIndex) {
++            metrics.referenceField = std::max(metrics.referenceField, std::abs(bNs[edgeIndex]));
++        }
++        // A field-free case has an exact zero flux residual; use one only as
++        // an unambiguous reporting scale, never as a local denominator.
++        if (!(metrics.referenceField > 0.0)) metrics.referenceField = 1.0;
+     }
+
+-    return max_divergence;
++    for (int elementIndex = 0; elementIndex < physicalElementCount; ++elementIndex) {
++        const Element& element = elPool.elements[elementIndex];
++        if (!(element.area > 0.0) || !std::isfinite(element.area)) {
++            throw std::runtime_error("Degenerate element while measuring divergence");
++        }
++        const Vec2 centroid = getElementCentroid2D(element, nodePool);
++        double signedFlux = 0.0;
++        double perimeter = 0.0;
++        double localFieldIntegral = 0.0;
++        for (const int edgeIndex : element.edgeIndexes) {
++            if (edgeIndex < 0 || edgeIndex >= physicalEdgeCount) {
++                throw std::runtime_error("Physical element references a ghost edge while measuring divergence");
++            }
++            const Edge& edge = edgePool.edges[edgeIndex];
++            const Vec2 centreToEdge = edge.midPoint - centroid;
++            const double orientation = centreToEdge * edge.normalVector;
++            if (orientation == 0.0) {
++                throw std::runtime_error("Zero edge orientation while measuring divergence");
++            }
++            const double signedBn = orientation > 0.0 ? bNs[edgeIndex] : -bNs[edgeIndex];
++            signedFlux += edge.length * signedBn;
++            perimeter += edge.length;
++            localFieldIntegral += edge.length * std::abs(bNs[edgeIndex]);
++        }
++        const double absoluteFlux = std::abs(signedFlux);
++        metrics.maxFlux = std::max(metrics.maxFlux, absoluteFlux);
++        metrics.maxAbs = std::max(metrics.maxAbs, absoluteFlux / element.area);
++        metrics.maxScaled = std::max(metrics.maxScaled,
++                                     absoluteFlux / (metrics.referenceField * perimeter));
++        // The local measure is informative away from field-free cells only;
++        // it is deliberately not used as a gate because the denominator can
++        // be arbitrarily small in magnetic-loop exterior cells.
++        if (localFieldIntegral > metrics.referenceField * perimeter * 1.0e-12) {
++            metrics.maxLocalScaled = std::max(metrics.maxLocalScaled,
++                                               absoluteFlux / localFieldIntegral);
++        }
++    }
++    return metrics;
++}
++
++double MHDSolver2D::computeDivergence() {
++    return computeDivergenceMetrics().maxAbs;
+ }
+
+ std::vector<int> findCommonElements(const std::vector<int>& v1, const std::vector<int>& v2) {
+@@ -2553,4 +2700,3 @@ void MHDSolver2D::runGPUSolver() {
+     divergence = computeDivergence();
+     std::cout << "Final divergence = " << divergence << std::endl;
+ }
+-
+diff --git a/src/MHDsolver/MHDSolver2D.h b/src/MHDsolver/MHDSolver2D.h
+index 136f3b9..07da2bd 100644
+--- a/src/MHDsolver/MHDSolver2D.h
++++ b/src/MHDsolver/MHDSolver2D.h
+@@ -16,6 +16,15 @@
+
+ #include <numbers>
+
++struct DivergenceMetrics {
++    double maxAbs = 0.0;
++    double maxFlux = 0.0;
++    // |Phi_K| / (B_ref * perimeter_K), with B_ref fixed at initialization.
++    double maxScaled = 0.0;
++    double referenceField = 0.0;
++    // Secondary diagnostic; omitted from acceptance gates in near-zero B.
++    double maxLocalScaled = 0.0;
++};
+
+ class MHDSolver2D {
+ public:
+@@ -29,6 +38,11 @@ public:
+     double tau = 0.0001; // шаг по времени
+     double min_tau = 1e-7; // минимальный шаг по времени
+     double cflNum = 0.4; // число Куранта
++    double configuredCfl = -1.0; // negative preserves a task default
++    double fieldLoopU = 2.0;
++    double fieldLoopV = 1.0;
++    double fieldLoopRadius = 0.3;
++    double fieldLoopAmplitude = 1.0e-3;
+     int MAX_ITERATIONS = 1000000; // максимальное число итераций
+     int iterationsPerFrame = 10; // число итераций для записи в файл
+     int task_type = 1; // тип задачи
+@@ -58,6 +72,10 @@ public:
+     double tau_from_cfl2D(const double& sigma, const double& hx, const std::vector<std::vector<double>>& states, const double& gam_hcr);
+     double tau_from_cfl2D(const double& sigma, const double& min_h, std::vector<std::vector<double>>& edgeStates, const double& gam_hcr,
+                           const EdgePool& ep);
++    // Conservative first-order finite-volume CFL bound for arbitrary triangles.
++    double stableTimeStepUnstructured(const std::vector<std::vector<double>>& states,
++                                      const std::vector<double>& faceNormalB,
++                                      const double& gam_hcr);
+     void setInitElemUs();
+     void runSolver();
+
+@@ -68,6 +86,7 @@ public:
+     void applyZeroRConditions(const ElementPool& elPool, const EdgePool& edgePool, const NodePool& nodePool, const std::vector<std::vector<double>>& elemUs_prev);
+
+     double computeDivergence();
++    DivergenceMetrics computeDivergenceMetrics(double referenceField = -1.0);
+     void checkNan(bool& foundNan);
+
+     // Начальное состояние системы
+@@ -91,11 +110,27 @@ public:
+ //void writeVTU(const std::string& filename, const World& geometryWorld, const std::vector<std::vector<double>>& elemUs);
+
+ double computeDivergence(const std::vector<std::vector<double>>& elemUs, const EdgePool& edgePool);
++// Sign relating stored nodeInd1 -> nodeInd2 to the CT tangent
++// t_CT=(-n_y,n_x).  It is +1 for the customary CCW physical-element
++// winding, but must be applied explicitly for a valid clockwise input mesh.
++double edgeCtOrientation(const Edge& edge, const NodePool& nodePool);
++double advanceFaceNormalBFromCt(const Edge& edge, const NodePool& nodePool,
++                                double previousNormalB, double dt,
++                                double firstNodeG, double secondNodeG);
++// RT0 reconstruction at the element centroid from edge-normal magnetic
++// degrees of freedom.  faceNormalB is oriented with Edge::neighbourInd1;
++// this routine applies the opposite sign for neighbourInd2 explicitly.
++// Physical elements must reference physical edges only.
++Vec2 reconstructCellMagneticFieldRT0(const Element& element,
++                                     const NodePool& nodePool,
++                                     const EdgePool& edgePool,
++                                     const std::vector<double>& faceNormalB,
++                                     int physicalEdgeCount);
+ std::vector<int> findCommonElements(const std::vector<int>& v1, const std::vector<int>& v2);
+ /*                       0      1      2      3    4   5   6   7
+- * U (general state):  rho,  rho*u, rho*v, rho*w,  e,  Bx, Bz, By
++ * U (general state):  rho,  rho*u, rho*v, rho*w,  e,  Bx, By, Bz
+  * gasU                rho,  rho*u, rho*v, rho*w,  e
+- * magU                 Bx,    Bz,    By
++ * magU                 Bx,    By,    Bz
+  * */
+
+ //void solverHLL2D(const World& world);
+diff --git a/src/MHDsolver/solver.cpp b/src/MHDsolver/solver.cpp
+index 8ad39d4..84b16f9 100644
+--- a/src/MHDsolver/solver.cpp
++++ b/src/MHDsolver/solver.cpp
+@@ -34,6 +34,11 @@ int main(){
+     bool debugDivergence = json_root.get("debugDivergence", false).asBool();
+     bool ghostOutput = json_root.get("ghostOutput", false).asBool();
+     int iterationsPerFrame = json_root.get("iterationsPerFrame", 10).asInt();
++    double configuredCfl = json_root.get("cfl", -1.0).asDouble();
++    double fieldLoopU = json_root.get("fieldLoopU", 2.0).asDouble();
++    double fieldLoopV = json_root.get("fieldLoopV", 1.0).asDouble();
++    double fieldLoopRadius = json_root.get("fieldLoopRadius", 0.3).asDouble();
++    double fieldLoopAmplitude = json_root.get("fieldLoopAmplitude", 1.0e-3).asDouble();
+     // world.display();
+     //std::cin.get();
+     omp_set_num_threads(omp_get_max_threads());
+@@ -42,6 +47,11 @@ int main(){
+     solver.finalTime = finalTime;
+     solver.debugDivergence = debugDivergence;
+     solver.iterationsPerFrame = iterationsPerFrame;
++    solver.configuredCfl = configuredCfl;
++    solver.fieldLoopU = fieldLoopU;
++    solver.fieldLoopV = fieldLoopV;
++    solver.fieldLoopRadius = fieldLoopRadius;
++    solver.fieldLoopAmplitude = fieldLoopAmplitude;
+     solver.ghostOutput = ghostOutput;
+
+     bool cylindrical= json_root.get("cylindrical", false).asBool();
+@@ -81,4 +91,4 @@ int main(){
+     solver.writeVTU(exportFileName, ghostOutput);
+
+     return 0;
+-}
+\ No newline at end of file
++}
+diff --git a/src/geometry/NetGeometry.cpp b/src/geometry/NetGeometry.cpp
+index 28e5f1a..20dbd3c 100644
+--- a/src/geometry/NetGeometry.cpp
++++ b/src/geometry/NetGeometry.cpp
+@@ -5,6 +5,47 @@
+
+ #include "NetGeometry.h"
+
++namespace {
++
++// The edge pool chooses its node order from the cyclic order of neighbour 1.
++// A text mesh with clockwise cells therefore used to change the sign convention
++// of CT even though winding is not a physical input degree of freedom.  Make
++// every planar input cell counter-clockwise before any edge/ghost topology is
++// derived from it.
++void canonicalizePlanarElementWinding(std::vector<Element>& elements,
++                                      const NodePool& nodePool) {
++    for (Element& element : elements) {
++        if (element.dim < 3 ||
++            element.nodeIndexes.size() != static_cast<std::size_t>(element.dim)) {
++            throw std::runtime_error("Text mesh contains an invalid planar element");
++        }
++
++        double twiceSignedArea = 0.0;
++        for (int nodeOffset = 0; nodeOffset < element.dim; ++nodeOffset) {
++            const int firstIndex = element.nodeIndexes[nodeOffset];
++            const int secondIndex = element.nodeIndexes[(nodeOffset + 1) % element.dim];
++            if (firstIndex < 0 || secondIndex < 0 ||
++                firstIndex >= nodePool.nodeCount || secondIndex >= nodePool.nodeCount) {
++                throw std::runtime_error("Text mesh element references an invalid node");
++            }
++            const Vec3& first = nodePool.nodes[firstIndex].pos;
++            const Vec3& second = nodePool.nodes[secondIndex].pos;
++            twiceSignedArea += first.x * second.y - second.x * first.y;
++        }
++
++        if (!std::isfinite(twiceSignedArea) || twiceSignedArea == 0.0) {
++            throw std::runtime_error("Text mesh contains a degenerate planar element");
++        }
++        if (twiceSignedArea < 0.0) {
++            // Retain the first vertex so that the element id and its first
++            // vertex remain stable while reversing the cyclic orientation.
++            std::reverse(element.nodeIndexes.begin() + 1, element.nodeIndexes.end());
++        }
++    }
++}
++
++}  // namespace
++
+ template <typename T> int sgn(T val) {
+     return (T(0) < val) - (val < T(0));
+ }
+@@ -544,6 +585,7 @@ World::World(const std::string &fileName, const bool isRenderedBin) : np(), ep()
+
+         std::cout << "Creating node and element pools..." << std::endl;
+         np = NodePool(nodes.size(), nodes);
++        canonicalizePlanarElementWinding(elements, np);
+         ep = ElementPool(elements[0].dim, elements.size(), elements); // предполагаем, что вс элементы имеют одинаковую размерность
+
+         // вычисляем площади и центры для элементов
+@@ -610,7 +652,7 @@ World::World(const std::string &fileName, const bool isRenderedBin) : np(), ep()
+                 maxX = node.pos.x;
+             }
+             else if(node.pos.x < minX){
+-                maxX = node.pos.x;
++                minX = node.pos.x;
+             }
+             if(node.pos.y > maxY){
+                 maxY = node.pos.y;
+@@ -810,6 +852,8 @@ World::World(const std::string &fileName, const bool isRenderedBin) : np(), ep()
+
+                         // neighbour service connection
+                         ns.boundaryToGhostElements[elem.ind] = ghostEl.ind;
++                        ns.boundaryEdgeToGhostElement[edge.ind] = ghostEl.ind;
++                        ns.ghostElementToBoundaryEdge[ghostEl.ind] = edge.ind;
+
+                         // Update indices
+                         ghostNodes.push_back(reflNode);
+@@ -1443,4 +1487,4 @@ bool World::isCounterClockwise(const std::vector<int> &nodeIndices, const NodePo
+         nodes[i] = np.getNode(nodeIndices[i]);
+     }
+     return isCounterClockwise(nodes);
+-}
+\ No newline at end of file
++}
+diff --git a/src/geometry/NetGeometry.h b/src/geometry/NetGeometry.h
+index 0302603..36a9998 100644
+--- a/src/geometry/NetGeometry.h
++++ b/src/geometry/NetGeometry.h
+@@ -116,6 +116,11 @@ public:
+     std::unordered_map<int, int> boundaryElemLeftToRight; // left boundary elements -> right boundary elements
+     std::unordered_map<int, int> boundaryElemTopToBottom; // top boundary elements -> bot boundary elements
+     std::unordered_map<int, int> boundaryToGhostElements; // boundary element -> ghost element
++    // A boundary triangle can touch two sides.  The historical map above is
++    // intentionally retained for compatibility but loses one corner ghost;
++    // corrected fluxes therefore use the one-to-one maps below.
++    std::unordered_map<int, int> boundaryEdgeToGhostElement;
++    std::unordered_map<int, int> ghostElementToBoundaryEdge;
+     std::unordered_map<int, int> edgeToGhostEdges; // edges to reflected ghost edges
+     NeighbourService(const NodePool& np, const ElementPool& ep, const EdgePool& edgePool);
+     std::vector<int> getEdgeNeighborsOfNode(int nodeIndex) const;
+@@ -184,4 +189,4 @@ void setNeighbourEdge(Element& el, const int edgeInd);
+
+ std::vector<double> reflectNodeOverVector(const Node& nodeToReflect, const Node& node1, const Node& node2);
+
+-#endif // MAGNETTOPRJCT_NETGEOMETRY_H
+\ No newline at end of file
++#endif // MAGNETTOPRJCT_NETGEOMETRY_H
+diff --git a/tests/legacy_corrected_kernel_test.cpp b/tests/legacy_corrected_kernel_test.cpp
+new file mode 100644
+index 0000000..1a92ed5
+--- /dev/null
++++ b/tests/legacy_corrected_kernel_test.cpp
+@@ -0,0 +1,448 @@
++#include "MHDSolver1D.h"
++#include "MHDSolver2D.h"
++#include "NetGeometry.h"
++
++#include <cmath>
++#include <exception>
++#include <iostream>
++#include <limits>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace {
++
++[[noreturn]] void fail(const std::string& message) {
++    throw std::runtime_error(message);
++}
++
++void require(const bool condition, const std::string& message) {
++    if (!condition) fail(message);
++}
++
++void require_near(const double actual, const double expected, const double tolerance,
++                  const std::string& message) {
++    if (std::abs(actual - expected) > tolerance) {
++        fail(message + ": actual=" + std::to_string(actual) +
++             ", expected=" + std::to_string(expected));
++    }
++}
++
++double max_abs_difference(const std::vector<double>& first, const std::vector<double>& second) {
++    require(first.size() == second.size(), "state-vector sizes differ");
++    double result = 0.0;
++    for (std::size_t component = 0; component < first.size(); ++component) {
++        result = std::max(result, std::abs(first[component] - second[component]));
++    }
++    return result;
++}
++
++void require_finite(const std::vector<double>& values, const std::string& label) {
++    for (const double value : values) {
++        require(std::isfinite(value), label + " contains a non-finite value");
++    }
++}
++
++double fast_speed_for_face(const std::vector<double>& state, const double normalB,
++                           const double gamma) {
++    const double rho = state[0];
++    const double pressureValue = pressure(state, gamma);
++    const double totalB2 = state[5] * state[5] + state[6] * state[6] + state[7] * state[7];
++    const double sound2 = gamma * pressureValue / rho;
++    const double alfven2 = totalB2 / rho;
++    const double normalAlfven2 = normalB * normalB / rho;
++    const double sum = sound2 + alfven2;
++    return std::sqrt(0.5 * (sum + std::sqrt(std::max(0.0, sum * sum -
++                                                               4.0 * sound2 * normalAlfven2))));
++}
++
++std::vector<double> discrete_curl_from_nodes(const World& world,
++                                             const double azX, const double azY) {
++    const NodePool nodes = world.getNodePool();
++    const EdgePool edges = world.getEdgePool();
++    const int physicalEdges = edges.edgeCount - world.ghostElemCount * 2;
++    std::vector<double> normalField(physicalEdges, 0.0);
++    for (int edgeIndex = 0; edgeIndex < physicalEdges; ++edgeIndex) {
++        const Edge& edge = edges.edges[edgeIndex];
++        const auto az = [&](const Node& node) {
++            return azX * node.pos.x + azY * node.pos.y;
++        };
++        normalField[edgeIndex] = edgeCtOrientation(edge, nodes) *
++            (az(nodes.nodes[edge.nodeInd2]) - az(nodes.nodes[edge.nodeInd1])) / edge.length;
++    }
++    return normalField;
++}
++
++struct OneDimensionalCpResult {
++    double relativeL1 = 0.0;
++    std::size_t fallbacks = 0;
++};
++
++std::vector<double> cp_alfven_state_1d(const double x, const double gamma) {
++    const double phase = 2.0 * std::acos(-1.0) * x;
++    const double transverse = 0.1 * std::sin(phase);
++    const double vertical = 0.1 * std::cos(phase);
++    return state_from_primitive_vars(1.0, 0.0, transverse, vertical, 0.1,
++                                     1.0, transverse, vertical, gamma);
++}
++
++OneDimensionalCpResult evolve_cp_alfven_1d(const int cellCount) {
++    constexpr double gamma = 5.0 / 3.0;
++    require(cellCount > 0, "1D CP test needs cells");
++    std::vector<std::vector<double>> state(cellCount);
++    std::vector<std::vector<double>> next(cellCount, std::vector<double>(8, 0.0));
++    std::vector<std::vector<double>> flux(cellCount, std::vector<double>(8, 0.0));
++    for (int cell = 0; cell < cellCount; ++cell) {
++        state[cell] = cp_alfven_state_1d((static_cast<double>(cell) + 0.5) / cellCount, gamma);
++    }
++
++    // Ten substeps per cell over a unit period: the test deliberately keeps
++    // forward Euler/first-order space, but isolates the corrected HLLD flux
++    // from the unstructured CT coupling.
++    const double dt = 0.1 / static_cast<double>(cellCount);
++    OneDimensionalCpResult result;
++    for (int step = 0; step < 10 * cellCount; ++step) {
++        for (int face = 0; face < cellCount; ++face) {
++            flux[face] = HLLD_flux_corrected(
++                state[face], state[(face + 1) % cellCount], gamma, &result.fallbacks);
++        }
++        for (int cell = 0; cell < cellCount; ++cell) {
++            const int leftFace = (cell + cellCount - 1) % cellCount;
++            for (int component = 0; component < 8; ++component) {
++                next[cell][component] = state[cell][component] -
++                    dt * cellCount * (flux[cell][component] - flux[leftFace][component]);
++            }
++            require(next[cell][0] > 0.0 && pressure(next[cell], gamma) > 0.0,
++                    "1D CP evolution produced an inadmissible state");
++        }
++        state.swap(next);
++    }
++
++    double accumulatedRelative = 0.0;
++    for (const int component : {2, 3, 6, 7}) {
++        double numerator = 0.0;
++        double denominator = 0.0;
++        for (int cell = 0; cell < cellCount; ++cell) {
++            const std::vector<double> exact =
++                cp_alfven_state_1d((static_cast<double>(cell) + 0.5) / cellCount, gamma);
++            const double observed = component < 4 ? state[cell][component] / state[cell][0]
++                                                  : state[cell][component];
++            const double reference = component < 4 ? exact[component] / exact[0]
++                                                    : exact[component];
++            numerator += std::abs(observed - reference);
++            denominator += std::abs(reference);
++        }
++        accumulatedRelative += numerator / denominator;
++    }
++    result.relativeL1 = accumulatedRelative / 4.0;
++    return result;
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++    if (argc != 4) {
++        std::cerr << "usage: legacy_corrected_kernel_test <irregular_mesh> <sliver_mesh> <cw_mesh>\n";
++        return 2;
++    }
++    try {
++        constexpr double gamma = 5.0 / 3.0;
++        // Conversion is a physics invariant shared by initialisation, HLLD
++        // and VTU diagnostics: pressure recovered from the conservative
++        // state must include both kinetic and magnetic energy exactly once.
++        constexpr double conversionRho = 1.7;
++        constexpr double conversionU = -0.31;
++        constexpr double conversionV = 0.27;
++        constexpr double conversionW = 0.13;
++        constexpr double conversionP = 0.83;
++        constexpr double conversionBx = -0.62;
++        constexpr double conversionBy = 0.44;
++        constexpr double conversionBz = 0.19;
++        const std::vector<double> converted = state_from_primitive_vars(
++            conversionRho, conversionU, conversionV, conversionW, conversionP,
++            conversionBx, conversionBy, conversionBz, gamma);
++        require_near(converted[0], conversionRho, 2.0e-15,
++                     "primitive-to-conservative conversion changed density");
++        require_near(converted[1] / converted[0], conversionU, 2.0e-15,
++                     "primitive-to-conservative conversion changed x velocity");
++        require_near(converted[2] / converted[0], conversionV, 2.0e-15,
++                     "primitive-to-conservative conversion changed y velocity");
++        require_near(converted[3] / converted[0], conversionW, 2.0e-15,
++                     "primitive-to-conservative conversion changed z velocity");
++        require_near(pressure(converted, gamma), conversionP, 2.0e-15,
++                     "conservative-to-primitive pressure round trip failed");
++
++        const std::vector<double> constant =
++            state_from_primitive_vars(1.2, 0.3, -0.2, 0.1, 0.9, 0.7, -0.4, 0.2, gamma);
++        std::size_t fallbackCount = 0;
++        const std::vector<double> equalFlux =
++            HLLD_flux_corrected(constant, constant, gamma, &fallbackCount);
++        const std::vector<double> physicalFlux = MHD_flux(constant, gamma);
++        require(max_abs_difference(equalFlux, physicalFlux) <= 3.0e-12,
++                "HLLD consistency F(U,U)=F_phys failed");
++        require(fallbackCount == 0, "HLLD fell back on an admissible equal state");
++        require_near(equalFlux[5], 0.0, 3.0e-14, "HLLD must not transport normal B");
++
++        const std::vector<double> leftSupersonic =
++            state_from_primitive_vars(1.0, 10.0, 0.2, 0.0, 1.0, 0.5, 0.1, 0.0, gamma);
++        const std::vector<double> rightSupersonic =
++            state_from_primitive_vars(0.8, 9.0, -0.1, 0.0, 0.7, 0.5, -0.2, 0.0, gamma);
++        require(max_abs_difference(HLLD_flux_corrected(leftSupersonic, rightSupersonic, gamma),
++                                   MHD_flux(leftSupersonic, gamma)) <= 3.0e-12,
++                "HLLD positive supersonic branch is not the left physical flux");
++        const std::vector<double> leftNegative =
++            state_from_primitive_vars(1.0, -10.0, 0.2, 0.0, 1.0, 0.5, 0.1, 0.0, gamma);
++        const std::vector<double> rightNegative =
++            state_from_primitive_vars(0.8, -9.0, -0.1, 0.0, 0.7, 0.5, -0.2, 0.0, gamma);
++        require(max_abs_difference(HLLD_flux_corrected(leftNegative, rightNegative, gamma),
++                                   MHD_flux(rightNegative, gamma)) <= 3.0e-12,
++                "HLLD negative supersonic branch is not the right physical flux");
++
++        const std::vector<double> brioLeft =
++            state_from_primitive_vars(1.0, 0.0, 0.0, 0.0, 1.0, 0.75, 1.0, 0.0, 2.0);
++        const std::vector<double> brioRight =
++            state_from_primitive_vars(0.125, 0.0, 0.0, 0.0, 0.1, 0.75, -1.0, 0.0, 2.0);
++        const std::vector<double> brioFlux = HLLD_flux_corrected(brioLeft, brioRight, 2.0);
++        require_finite(brioFlux, "Brio--Wu HLLD flux");
++        require_near(brioFlux[5], 0.0, 3.0e-14, "Brio--Wu HLLD changed normal B flux");
++
++        const std::vector<double> zeroNormalLeft =
++            state_from_primitive_vars(1.0, 0.0, 0.4, 0.0, 1.0, 0.0, 0.2, -0.1, gamma);
++        const std::vector<double> zeroNormalRight =
++            state_from_primitive_vars(0.9, 0.1, -0.3, 0.2, 0.8, 0.0, -0.2, 0.3, gamma);
++        require_finite(HLLD_flux_corrected(zeroNormalLeft, zeroNormalRight, gamma),
++                       "HLLD Bn=0 degeneracy flux");
++
++        // A strictly positive near-vacuum state is deliberately not floored.
++        // The HLLD intermediate denominator is ill-conditioned at this
++        // scale, therefore the observable HLLE fallback is the safe result.
++        const std::vector<double> dilute =
++            state_from_primitive_vars(1.0e-30, 0.0, 0.0, 0.0, 1.0e-30,
++                                      0.0, 0.0, 0.0, gamma);
++        fallbackCount = 0;
++        require_finite(HLLD_flux_corrected(dilute, dilute, gamma, &fallbackCount),
++                       "HLLE fallback flux for positive near-vacuum state");
++        require(fallbackCount == 1,
++                "HLLD did not expose the HLLE fallback for a degenerate positive state");
++
++        bool rejectedInvalidState = false;
++        std::vector<double> invalid = constant;
++        invalid[4] = 0.0;
++        try {
++            (void)HLLD_flux_corrected(invalid, constant, gamma);
++        } catch (const std::domain_error&) {
++            rejectedInvalidState = true;
++        }
++        require(rejectedInvalidState, "HLLD accepted an invalid state instead of reporting it");
++
++        const OneDimensionalCpResult cp32 = evolve_cp_alfven_1d(32);
++        const OneDimensionalCpResult cp64 = evolve_cp_alfven_1d(64);
++        const OneDimensionalCpResult cp128 = evolve_cp_alfven_1d(128);
++        require(cp32.fallbacks == 0 && cp64.fallbacks == 0 && cp128.fallbacks == 0,
++                "smooth 1D CP wave unexpectedly used HLLE fallback");
++        require(cp64.relativeL1 < cp32.relativeL1 && cp128.relativeL1 < cp64.relativeL1,
++                "corrected HLLD does not converge for the isolated 1D CP wave");
++        std::cout << "1D CP relative L1: N=32 " << cp32.relativeL1
++                  << ", N=64 " << cp64.relativeL1
++                  << ", N=128 " << cp128.relativeL1 << '\n';
++
++        World irregular(argv[1], false);
++        NeighbourService& irregularNeighbours = irregular.getNeighbourService();
++        require_near(irregular.minX, 0.0, 1.0e-15,
++                     "World minX depends on the first (interior) mesh node");
++        require_near(irregular.maxX, 1.0, 1.0e-15, "World maxX is wrong");
++        require_near(irregular.minY, 0.0, 1.0e-15, "World minY is wrong");
++        require_near(irregular.maxY, 1.0, 1.0e-15, "World maxY is wrong");
++        require(irregular.ghostElemCount > 4, "irregular mesh did not create boundary ghosts");
++        require(static_cast<int>(irregularNeighbours.boundaryEdgeToGhostElement.size()) ==
++                    irregular.ghostElemCount,
++                "boundary-edge to ghost mapping is incomplete");
++        require(static_cast<int>(irregularNeighbours.ghostElementToBoundaryEdge.size()) ==
++                    irregular.ghostElemCount,
++                "ghost to boundary-edge mapping is incomplete");
++        for (const auto& [edge, ghost] : irregularNeighbours.boundaryEdgeToGhostElement) {
++            const auto inverse = irregularNeighbours.ghostElementToBoundaryEdge.find(ghost);
++            require(inverse != irregularNeighbours.ghostElementToBoundaryEdge.end() &&
++                        inverse->second == edge,
++                    "boundary/ghost maps are not inverse");
++        }
++
++        MHDSolver2D divergenceSolver(irregular);
++        const EdgePool irregularEdges = irregular.getEdgePool();
++        const int irregularPhysicalEdges =
++            irregularEdges.edgeCount - irregular.ghostElemCount * 2;
++        divergenceSolver.innerElemCount =
++            irregular.getElementPool().elCount - irregular.ghostElemCount;
++        divergenceSolver.innerEdgeCount = irregularPhysicalEdges;
++        divergenceSolver.bNs.assign(irregularPhysicalEdges, 0.0);
++        divergenceSolver.bNs = discrete_curl_from_nodes(irregular, -0.3, 0.75);
++        const NodePool irregularNodes = irregular.getNodePool();
++        const DivergenceMetrics initialCurl =
++            divergenceSolver.computeDivergenceMetrics(1.0);
++        require(initialCurl.maxFlux <= 5.0e-14,
++                "nodal vector potential is not discretely divergence-free");
++        require(initialCurl.maxAbs <= 5.0e-12,
++                "discrete curl produced non-roundoff divergence");
++
++        // RT0 must reproduce a constant field exactly from its normal face
++        // fluxes on an actually irregular triangle mesh.  This is stronger
++        // than checking div B alone: a telescoping but incorrectly oriented
++        // reconstruction could still have roundoff divergence.
++        constexpr double uniformBx = 0.73;
++        constexpr double uniformBy = -0.41;
++        std::vector<double> constantFaceField(irregularPhysicalEdges, 0.0);
++        for (int edgeIndex = 0; edgeIndex < irregularPhysicalEdges; ++edgeIndex) {
++            const Edge& edge = irregularEdges.edges[edgeIndex];
++            constantFaceField[edgeIndex] =
++                uniformBx * edge.normalVector.x + uniformBy * edge.normalVector.y;
++        }
++        const ElementPool irregularElements = irregular.getElementPool();
++        for (int elementIndex = 0; elementIndex < divergenceSolver.innerElemCount; ++elementIndex) {
++            const Vec2 reconstructed = reconstructCellMagneticFieldRT0(
++                irregularElements.elements[elementIndex], irregularNodes, irregularEdges,
++                constantFaceField, irregularPhysicalEdges);
++            require_near(reconstructed.x, uniformBx, 2.0e-12,
++                         "RT0 reconstruction does not recover constant Bx");
++            require_near(reconstructed.y, uniformBy, 2.0e-12,
++                         "RT0 reconstruction does not recover constant By");
++        }
++
++        // Input element winding is not a physical degree of freedom.  A
++        // clockwise copy of the same mesh must retain the physical B.n and
++        // the discrete curl invariant, including after one shared CT update.
++        World clockwise(argv[3], false);
++        const EdgePool clockwiseEdges = clockwise.getEdgePool();
++        const ElementPool clockwiseElements = clockwise.getElementPool();
++        const NodePool clockwiseNodes = clockwise.getNodePool();
++        const int clockwisePhysicalEdges = clockwiseEdges.edgeCount - clockwise.ghostElemCount * 2;
++        const int clockwisePhysicalElements = clockwiseElements.elCount - clockwise.ghostElemCount;
++        require(clockwisePhysicalEdges == irregularPhysicalEdges,
++                "CW mesh changed the physical edge count");
++        for (int edgeIndex = 0; edgeIndex < clockwisePhysicalEdges; ++edgeIndex) {
++            const Edge& edge = clockwiseEdges.edges[edgeIndex];
++            const double orientation = edgeCtOrientation(edge, clockwiseNodes);
++            require(orientation > 0.0,
++                    "CW text mesh was not canonicalized before CT topology construction");
++        }
++
++        // The production loader canonicalizes text cells, but the CT helper
++        // must still retain its explicit orientation factor: old binary meshes
++        // and future topology sources may carry the opposite edge tangent.
++        Edge oppositeTangent = clockwiseEdges.edges[0];
++        std::swap(oppositeTangent.nodeInd1, oppositeTangent.nodeInd2);
++        require(edgeCtOrientation(oppositeTangent, clockwiseNodes) < 0.0,
++                "negative CT orientation branch was not detected");
++        constexpr double previousBn = 0.37;
++        constexpr double firstNodeG = 0.2;
++        constexpr double secondNodeG = -0.1;
++        require_near(
++            advanceFaceNormalBFromCt(oppositeTangent, clockwiseNodes, previousBn, 0.125,
++                                     firstNodeG, secondNodeG),
++            previousBn - 0.125 / oppositeTangent.length * (secondNodeG - firstNodeG),
++            2.0e-14, "negative CT orientation update has the wrong sign");
++        std::vector<double> clockwiseCurl =
++            discrete_curl_from_nodes(clockwise, -uniformBy, uniformBx);
++        for (int edgeIndex = 0; edgeIndex < clockwisePhysicalEdges; ++edgeIndex) {
++            const Edge& edge = clockwiseEdges.edges[edgeIndex];
++            const double expectedBn =
++                uniformBx * edge.normalVector.x + uniformBy * edge.normalVector.y;
++            require_near(clockwiseCurl[edgeIndex], expectedBn, 3.0e-12,
++                         "potential-derived Bn changes under CW input winding");
++        }
++        MHDSolver2D clockwiseSolver(clockwise);
++        clockwiseSolver.innerElemCount = clockwisePhysicalElements;
++        clockwiseSolver.innerEdgeCount = clockwisePhysicalEdges;
++        clockwiseSolver.bNs = clockwiseCurl;
++        require(clockwiseSolver.computeDivergenceMetrics(1.0).maxFlux <= 5.0e-14,
++                "CW potential field is not discretely divergence-free");
++        for (int edgeIndex = 0; edgeIndex < clockwisePhysicalEdges; ++edgeIndex) {
++            const Edge& edge = clockwiseEdges.edges[edgeIndex];
++            const double psiFirst = std::sin(1.7 * clockwiseNodes.nodes[edge.nodeInd1].pos.x) +
++                                    0.4 * clockwiseNodes.nodes[edge.nodeInd1].pos.y;
++            const double psiSecond = std::sin(1.7 * clockwiseNodes.nodes[edge.nodeInd2].pos.x) +
++                                     0.4 * clockwiseNodes.nodes[edge.nodeInd2].pos.y;
++            clockwiseSolver.bNs[edgeIndex] = advanceFaceNormalBFromCt(
++                edge, clockwiseNodes, clockwiseSolver.bNs[edgeIndex], 0.125,
++                psiFirst, psiSecond);
++        }
++        require(clockwiseSolver.computeDivergenceMetrics(1.0).maxFlux <= 8.0e-14,
++                "CW CT update violates the discrete divergence invariant");
++
++        // The CT Faraday increment itself is another edge-wise nodal
++        // difference, so its divergence must telescope on every triangle.
++        for (int edgeIndex = 0; edgeIndex < irregularPhysicalEdges; ++edgeIndex) {
++            const Edge& edge = irregularEdges.edges[edgeIndex];
++            const double psiFirst = std::sin(1.7 * irregularNodes.nodes[edge.nodeInd1].pos.x) +
++                                    0.4 * irregularNodes.nodes[edge.nodeInd1].pos.y;
++            const double psiSecond = std::sin(1.7 * irregularNodes.nodes[edge.nodeInd2].pos.x) +
++                                     0.4 * irregularNodes.nodes[edge.nodeInd2].pos.y;
++            divergenceSolver.bNs[edgeIndex] = advanceFaceNormalBFromCt(
++                edge, irregularNodes, divergenceSolver.bNs[edgeIndex], 0.125,
++                psiFirst, psiSecond);
++        }
++        const DivergenceMetrics updatedCurl =
++            divergenceSolver.computeDivergenceMetrics(1.0);
++        require(updatedCurl.maxFlux <= 8.0e-14,
++                "edge update from nodal EMF violated discrete divergence");
++
++        int interiorEdge = -1;
++        for (int edgeIndex = 0; edgeIndex < irregularPhysicalEdges; ++edgeIndex) {
++            if (irregularEdges.edges[edgeIndex].neighbourInd2 >= 0) {
++                interiorEdge = edgeIndex;
++                break;
++            }
++        }
++        require(interiorEdge >= 0, "irregular mesh has no interior edge");
++        divergenceSolver.bNs[interiorEdge] += 1.0e-3;
++        const DivergenceMetrics perturbed =
++            divergenceSolver.computeDivergenceMetrics(1.0);
++        require(perturbed.maxAbs > 1.0e-4,
++                "max(abs(div B)) did not detect a signed interior face perturbation");
++
++        World sliver(argv[2], false);
++        MHDSolver2D sliverSolver(sliver);
++        sliverSolver.cflNum = 0.4;
++        const EdgePool sliverEdges = sliver.getEdgePool();
++        const ElementPool sliverElements = sliver.getElementPool();
++        const int sliverPhysicalElements = sliverElements.elCount - sliver.ghostElemCount;
++        const int sliverPhysicalEdges = sliverEdges.edgeCount - sliver.ghostElemCount * 2;
++        const std::vector<double> uniform =
++            state_from_primitive_vars(1.0, 0.0, 0.0, 0.0, 1.0, 0.5, -0.2, 0.1, gamma);
++        std::vector<std::vector<double>> uniformStates(sliverPhysicalElements, uniform);
++        std::vector<double> sliverBn(sliverPhysicalEdges, 0.0);
++        double maxSignal = 0.0;
++        for (int edgeIndex = 0; edgeIndex < sliverPhysicalEdges; ++edgeIndex) {
++            const Edge& edge = sliverEdges.edges[edgeIndex];
++            sliverBn[edgeIndex] =
++                uniform[5] * edge.normalVector.x + uniform[6] * edge.normalVector.y;
++            maxSignal = std::max(maxSignal, fast_speed_for_face(uniform, sliverBn[edgeIndex], gamma));
++        }
++        double expectedCflDt = std::numeric_limits<double>::infinity();
++        for (int elementIndex = 0; elementIndex < sliverPhysicalElements; ++elementIndex) {
++            double spectralPerimeter = 0.0;
++            for (const int edgeIndex : sliverElements.elements[elementIndex].edgeIndexes) {
++                spectralPerimeter += sliverEdges.edges[edgeIndex].length *
++                                     fast_speed_for_face(uniform, sliverBn[edgeIndex], gamma);
++            }
++            expectedCflDt = std::min(expectedCflDt,
++                                     0.4 * sliverElements.elements[elementIndex].area / spectralPerimeter);
++        }
++        const double computedCflDt =
++            sliverSolver.stableTimeStepUnstructured(uniformStates, sliverBn, gamma);
++        require_near(computedCflDt, expectedCflDt,
++                     2.0e-13 * std::max(1.0, expectedCflDt),
++                     "unstructured CFL bound differs from A/sum(lambda*edge)");
++        const double historicalMinEdgeDt = 0.4 * sliverEdges.minEdgeLen / maxSignal;
++        require(computedCflDt < historicalMinEdgeDt,
++                "sliver-triangle CFL did not become stricter than min-edge CFL");
++        sliverSolver.cflNum = 1.0e-8;
++        require(sliverSolver.stableTimeStepUnstructured(uniformStates, sliverBn, gamma) < 1.0e-7,
++                "unstructured CFL still has a hidden lower time-step floor");
++
++        std::cout << "legacy_corrected kernel and geometry regressions passed\n";
++        return 0;
++    } catch (const std::exception& error) {
++        std::cerr << "legacy_corrected regression failure: " << error.what() << '\n';
++        return 1;
++    }
++}
+diff --git a/tests/data/irregular_periodic_mesh.txt b/tests/data/irregular_periodic_mesh.txt
+new file mode 100644
+index 0000000..7fc2ae4
+--- /dev/null
++++ b/tests/data/irregular_periodic_mesh.txt
+@@ -0,0 +1,23 @@
++$Nodes
++9
++1 0.42 0.62 0
++2 0 0 0
++3 1 0 0
++4 1 1 0
++5 0 1 0
++6 0.52 0 0
++7 0.52 1 0
++8 0 0.47 0
++9 1 0.47 0
++$EndNodes
++$Elements
++8
++1 3 2 6 8
++2 3 6 3 1
++3 3 3 9 1
++4 3 9 4 1
++5 3 4 7 1
++6 3 7 5 1
++7 3 5 8 1
++8 3 8 6 1
++$EndElements
+diff --git a/tests/data/irregular_periodic_mesh_cw.txt b/tests/data/irregular_periodic_mesh_cw.txt
+new file mode 100644
+index 0000000..85e81c9
+--- /dev/null
++++ b/tests/data/irregular_periodic_mesh_cw.txt
+@@ -0,0 +1,23 @@
++$Nodes
++9
++1 0.42 0.62 0
++2 0 0 0
++3 1 0 0
++4 1 1 0
++5 0 1 0
++6 0.52 0 0
++7 0.52 1 0
++8 0 0.47 0
++9 1 0.47 0
++$EndNodes
++$Elements
++8
++1 3 2 8 6
++2 3 6 1 3
++3 3 3 1 9
++4 3 9 1 4
++5 3 4 1 7
++6 3 7 1 5
++7 3 5 1 8
++8 3 8 1 6
++$EndElements
+diff --git a/tests/data/sliver_periodic_mesh.txt b/tests/data/sliver_periodic_mesh.txt
+new file mode 100644
+index 0000000..c2c2b56
+--- /dev/null
++++ b/tests/data/sliver_periodic_mesh.txt
+@@ -0,0 +1,15 @@
++$Nodes
++5
++1 0 0 0
++2 1 0 0
++3 1 1 0
++4 0 1 0
++5 0.5 0.01 0
++$EndNodes
++$Elements
++4
++1 3 1 2 5
++2 3 2 3 5
++3 3 3 4 5
++4 3 4 1 5
++$EndElements
