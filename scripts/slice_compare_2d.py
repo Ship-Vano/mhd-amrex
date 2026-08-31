@@ -90,7 +90,11 @@ def main() -> int:
     ap.add_argument("--amrex-csv", type=Path)
     ap.add_argument("--gamma", type=float, default=5.0 / 3.0)
     ap.add_argument("--half-band", type=float, default=0.02)
-    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--out", type=Path, required=True,
+                    help="compact JSON summary (feature stats only)")
+    ap.add_argument("--profile-dir", type=Path,
+                    help="if given, write the full per-point slice as "
+                         "<solver>_<case>_slice.csv here (raw, not summary)")
     args = ap.parse_args()
 
     mode, coord = ("horizontal", 0.3125) if args.case == "orszag_tang" else ("diagonal", 0.0)
@@ -103,21 +107,26 @@ def main() -> int:
                   "Figs.20,22. Literature plots are qualitative."),
               "solvers": {}}
 
+    def record(solver: str, picked):
+        result["solvers"][solver] = {
+            "slice_points": len(picked),
+            **{f: _features(picked, i) for f, i in fields.items()},
+        }
+        if args.profile_dir and picked:
+            args.profile_dir.mkdir(parents=True, exist_ok=True)
+            path = args.profile_dir / f"{solver}_{args.case}_slice.csv"
+            with path.open("w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(["x", "rho", "p", "vx", "vy", "bx", "by"])
+                for r in picked:
+                    w.writerow([f"{v:.8g}" for v in r])
+
     if args.legacy_mesh and args.legacy_vtu:
-        picked = _slice(_read_legacy(args.legacy_mesh, args.legacy_vtu, args.gamma),
-                        mode, coord, args.half_band)
-        result["solvers"]["legacy_corrected"] = {
-            "slice_points": len(picked),
-            **{f: _features(picked, i) for f, i in fields.items()},
-            "profile": [{"x": round(r[0], 5), "rho": r[1], "p": r[2]} for r in picked],
-        }
+        record("legacy_corrected",
+               _slice(_read_legacy(args.legacy_mesh, args.legacy_vtu, args.gamma),
+                      mode, coord, args.half_band))
     if args.amrex_csv:
-        picked = _slice(_read_amrex(args.amrex_csv), mode, coord, args.half_band)
-        result["solvers"]["amrex"] = {
-            "slice_points": len(picked),
-            **{f: _features(picked, i) for f, i in fields.items()},
-            "profile": [{"x": round(r[0], 5), "rho": r[1], "p": r[2]} for r in picked],
-        }
+        record("amrex", _slice(_read_amrex(args.amrex_csv), mode, coord, args.half_band))
 
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     for solver, data in result["solvers"].items():
