@@ -82,6 +82,42 @@ def briowu(args):
                ["x", "rho", "u", "By", "p"], rows)
 
 
+def dai_woodward(args):
+    """Dai-Woodward 1-D: legacy HLLD vs AMReX N0/N3 vs provisional reference."""
+    leg = Path(args.dw_legacy)
+    if leg.is_file():
+        rows = [(float(r["x"]), float(r["rho"]), float(r["u"]), float(r["By"]), float(r["p"]))
+                for r in csv.DictReader(leg.open())]
+        _write("dw1d_legacy.dat",
+               f"legacy_corrected HLLD (N0) Dai-Woodward, Nx=400, t=0.2; source {leg}",
+               ["x", "rho", "u", "By", "p"], rows)
+    for tag, src, nx, nd in (("n0", args.dw_n0, 400, 200),
+                             ("n3", args.dw_n3, 400, 200),
+                             ("ref", args.dw_ref, 2048, 400)):
+        p = Path(src)
+        if not p.is_file():
+            print(f"skip dw1d_{tag}: {p} missing")
+            continue
+        rows = _downsample(_collapse_strip(p, nx), nd)
+        _write(f"dw1d_{tag}.dat", f"AMReX Dai-Woodward {tag}, Nx={nx}, t=0.2; source {p}",
+               ["x", "rho", "u", "By", "p"], rows)
+
+
+def loop_eb(args):
+    """Magnetic-loop E_B(t)/E_B(0) vs N -- run mhd2d_verify loop <N> 2.0 0.1 first."""
+    import subprocess
+    rows = []
+    for n in (64, 128, 256):
+        out = subprocess.run([args.verify, "loop", str(n), "2.0", "0.1"],
+                             capture_output=True, text=True).stdout
+        mt = re.search(r"ratio=([\d.]+)", out)
+        if mt:
+            rows.append((n, float(mt.group(1))))
+    _write("loop_eb_amrex.dat",
+           "AMReX magnetic loop E_B(t=2)/E_B(0) vs N; mhd2d_verify loop N 2.0 0.1",
+           ["N", "eb_ratio"], rows)
+
+
 def alfven(args):
     rows = []
     for n in (16, 32, 64, 128):
@@ -170,9 +206,15 @@ def main() -> int:
     ap.add_argument("--bw-ref", default="/tmp/bw_ref.csv")
     ap.add_argument("--rotor-vtu")
     ap.add_argument("--rotor-mesh")
-    ap.add_argument("--only", choices=("briowu", "alfven", "ot", "rotor"))
+    ap.add_argument("--dw-legacy", default="benchmarks/raw/legacy_corrected/riemann_1d_n400/dai_woodward_1d.csv")
+    ap.add_argument("--dw-n0", default="/tmp/dw_n0.csv")
+    ap.add_argument("--dw-n3", default="/tmp/dw_n3.csv")
+    ap.add_argument("--dw-ref", default="/tmp/dw_ref.csv")
+    ap.add_argument("--verify", default="./build/release/mhd2d_verify")
+    ap.add_argument("--only", choices=("briowu", "dai_woodward", "loop_eb", "alfven", "ot", "rotor"))
     args = ap.parse_args()
-    todo = [args.only] if args.only else ["briowu", "alfven", "ot", "rotor"]
+    todo = ([args.only] if args.only
+            else ["briowu", "dai_woodward", "loop_eb", "alfven", "ot", "rotor"])
     for name in todo:
         globals()[name](args)
     return 0

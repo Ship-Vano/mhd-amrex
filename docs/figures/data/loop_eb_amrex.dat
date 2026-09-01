@@ -1,0 +1,5 @@
+# AMReX magnetic loop E_B(t=2)/E_B(0) vs N; mhd2d_verify loop N 2.0 0.1
+N eb_ratio
+64 0.624306
+128 0.836157
+256 0.912522

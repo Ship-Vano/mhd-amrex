@@ -1,5 +1,13 @@
 # Cross-solver comparison — Brio–Wu, 1-D, uniform grid (T08 Level A, provisional)
 
+> Broader suite-wide comparison (Brio–Wu, Dai–Woodward, CP-Alfvén, rotor,
+> Orszag–Tang, magnetic loop) is in
+> [`CROSS_SOLVER_COMPARISON.md`](CROSS_SOLVER_COMPARISON.md). This note keeps the
+> detailed Brio–Wu N0–N3 ablation and the equal-cost timing; note its
+> `legacy_corrected` profile was the 2-D triangular strip, whereas
+> `CROSS_SOLVER_COMPARISON.md §1` uses a true 1-D legacy driver (which agrees
+> with the AMReX kernel to ~6–10 %).
+
 Date: 2026-08-31. Scope: **equal-spacing and equal-cost** views of the
 `legacy_corrected` unstructured solver against the AMReX scheme and its N0–N3
 ablation, on the classic Brio–Wu shock tube. This is Level A of the
