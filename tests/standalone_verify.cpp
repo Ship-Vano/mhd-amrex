@@ -371,6 +371,20 @@ static void run(Grid& g, Real gamma, Real cfl, Real tmax,
                 tag, step, t, divmax_hist, g_hlld_fallbacks);
 }
 
+// Полная магнитная энергия домена (для теста о петле поля).
+static Real magnetic_energy(Grid& g, Real gamma)
+{
+    Real e = 0.0;
+    for (int j = 0; j < g.ny; ++j)
+        for (int i = 0; i < g.nx; ++i) {
+            Real uc[NCONS], q[NPRIM];
+            for (int n = 0; n < NCONS; ++n) uc[n] = g.u(i, j, n);
+            cons_to_prim(uc, q, gamma);
+            e += 0.5 * (q[QBX]*q[QBX] + q[QBY]*q[QBY] + q[QBZ]*q[QBZ]) * g.dx * g.dy;
+        }
+    return e;
+}
+
 static void dump_field(Grid& g, Real gamma, const char* fname)
 {
     FILE* f = std::fopen(fname, "w");
@@ -543,6 +557,84 @@ int main(int argc, char** argv)
             [](Real, Real){ return 0.0; });
         run(g, gamma, 0.4, 0.15, Limiter::MC, EmfAveraging::GardinerStone, "rotor");
         dump_field(g, gamma, "out_rotor.csv");
+    }
+    else if (test == "loop") {
+        // Перенос петли магнитного поля (ВКРБ §4.1.4 / Athena field loop).
+        // Область [-1,1]×[-0.5,0.5], ρ=p=1, γ=5/3, v=(2,1), Az=A0(R0−r), r≤R0.
+        // Метрика: E_B(t)/E_B(0) (в идеале 1; спад = численная диссипация).
+        //   loop <Nx> [t_end] [cfl]
+        const int  Nx    = (argc > 2) ? std::atoi(argv[2]) : 128;
+        const Real tmax  = (argc > 3) ? std::atof(argv[3]) : 2.0;
+        const Real cfl   = (argc > 4) ? std::atof(argv[4]) : 0.1;
+        const Real gamma = 5.0/3.0;
+        const Real A0 = 1.0e-3, R0 = 0.3, u0 = 2.0, v0 = 1.0;
+        Grid g(Nx, Nx/2, -1.0, 1.0, -0.5, 0.5);   // область 2×1 → ny=Nx/2, dy=dx
+        g.bclo[0]=g.bchi[0]=g.bclo[1]=g.bchi[1]=BC::Periodic;
+        auto Az = [=](Real x, Real y) {
+            const Real r = std::sqrt(x*x + y*y);
+            return (r <= R0) ? A0*(R0 - r) : 0.0;
+        };
+        const Real hdx = 0.5*g.dx, hdy = 0.5*g.dy;
+        init_from_prim(g, gamma,
+            [=](Real, Real, Real* q) {
+                q[QRHO]=1.0; q[QP]=1.0; q[QU]=u0; q[QV]=v0; q[QW]=0.0; q[QBZ]=0.0;
+            },
+            [=](Real x, Real y){ return  (Az(x, y+hdy) - Az(x, y-hdy)) / g.dy; },
+            [=](Real x, Real y){ return -(Az(x+hdx, y) - Az(x-hdx, y)) / g.dx; });
+        const Real eb0 = magnetic_energy(g, gamma);
+        run(g, gamma, cfl, tmax, Limiter::MC, EmfAveraging::GardinerStone, "loop");
+        const Real eb1 = magnetic_energy(g, gamma);
+        std::printf("[loop N=%d] E_B(0)=%.8e  E_B(t)=%.8e  ratio=%.6f\n",
+                    Nx, eb0, eb1, eb1/eb0);
+        char fn[64]; std::snprintf(fn, 64, "out_loop_%d.csv", Nx);
+        dump_field(g, gamma, fn);
+    }
+    else if (test == "dw1d") {
+        // Задача Даи–Вудварда (ВКРБ §2.1.2): одномерная задача Римана с двумя
+        // быстрыми и двумя медленными МГД-разрывами, двумя вращательными и
+        // контактным.  x∈[-0.5,0.5], γ=5/3, Bx=4/√(4π), t=0.2, замороженные ГУ.
+        //   dw1d <Nx> <none|minmod|mc|vanleer> <euler|rk2> <bs|gs> <cfl> [out.csv]
+        const Real gamma = 5.0/3.0;
+        const Real s4pi  = std::sqrt(4.0*M_PI);
+        const int  Nx    = (argc > 2) ? std::atoi(argv[2]) : 400;
+        const std::string slim = (argc > 3) ? argv[3] : "mc";
+        const std::string sti  = (argc > 4) ? argv[4] : "rk2";
+        const std::string semf = (argc > 5) ? argv[5] : "gs";
+        const Real cfl   = (argc > 6) ? std::atof(argv[6]) : 0.2;
+        const std::string out = (argc > 7) ? argv[7] : "out_dw1d.csv";
+        Limiter lim = Limiter::MC;
+        if      (slim == "none")    lim = Limiter::None;
+        else if (slim == "minmod")  lim = Limiter::MinMod;
+        else if (slim == "vanleer") lim = Limiter::VanLeer;
+        const TimeInt ti = (sti == "euler") ? TimeInt::Euler : TimeInt::RK2;
+        const EmfAveraging emf = (semf == "bs") ? EmfAveraging::BalsaraSpicer
+                                                : EmfAveraging::GardinerStone;
+        Grid g(Nx, 4, -0.5, 0.5, 0.0, 1.0 / Nx * 4.0);   // dy = dx
+        g.bclo[0] = g.bchi[0] = BC::Dirichlet;
+        g.bclo[1] = g.bchi[1] = BC::Periodic;
+        init_from_prim(g, gamma,
+            [s4pi](Real x, Real, Real* q) {
+                if (x < 0.0) { q[QRHO]=1.08; q[QP]=0.95; q[QU]=1.2; q[QV]=0.01; q[QW]=0.5;
+                               q[QBZ]=2.0/s4pi; }
+                else         { q[QRHO]=1.0;  q[QP]=1.0;  q[QU]=0.0; q[QV]=0.0;  q[QW]=0.0;
+                               q[QBZ]=2.0/s4pi; }
+            },
+            [s4pi](Real, Real){ return 4.0/s4pi; },
+            [s4pi](Real x, Real){ return (x < 0.0) ? 3.6/s4pi : 4.0/s4pi; });
+        run(g, gamma, cfl, 0.2, lim, emf, "dw1d", ti);
+        Real rmin = 1e30, pmin = 1e30, bymax = -1e30;
+        for (int i = 0; i < Nx; ++i) {
+            Real uc[NCONS], q[NPRIM];
+            for (int n = 0; n < NCONS; ++n) uc[n] = g.u(i, 0, n);
+            cons_to_prim(uc, q, gamma);
+            rmin = std::min(rmin, q[QRHO]); pmin = std::min(pmin, q[QP]);
+            bymax = std::max(bymax, q[QBY]);
+        }
+        // By монотонно возрастает от 3.6/√4π до максимума ~1.6; overshoot > 0.05
+        // над правым состоянием 4/√4π означал бы паразитную осцилляцию.
+        std::printf("[dw1d N=%d] rho_min=%.6g p_min=%.6g By_max=%.6g\n",
+                    Nx, rmin, pmin, bymax);
+        dump_field(g, gamma, out.c_str());
     }
     else {
         std::fprintf(stderr, "unknown test '%s'\n", test.c_str());

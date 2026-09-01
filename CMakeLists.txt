@@ -123,6 +123,12 @@ if(BUILD_TESTING)
   add_test(NAME standalone.alfven_order
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_alfven_order.py
                    --executable $<TARGET_FILE:mhd2d_verify> --coarse 64 --fine 128 --min-order 1.8)
+  add_test(NAME standalone.dai_woodward
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_verify.py
+                   --executable $<TARGET_FILE:mhd2d_verify> --case dw1d --resolution 200)
+  add_test(NAME standalone.loop
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_verify.py
+                   --executable $<TARGET_FILE:mhd2d_verify> --case loop --resolution 64)
   add_test(NAME config.valid
            COMMAND mhd2d_config_validate ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
   add_test(NAME config.rejects_unknown_key
