@@ -76,6 +76,7 @@ private:
     void RefluxAll();                                   // коррекция грубых ячеек
     // Σ по иерархии без учёта перекрытых грубых ячеек: диагностика сохранения.
     amrex::Real TotalConserved(int comp) const;
+    void PrintStateRanges() const;   // min/max rho и p по иерархии
 
     // --- сервис ---------------------------------------------------------------
     void AllocLevel(int lev, const amrex::BoxArray& ba,

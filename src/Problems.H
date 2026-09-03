@@ -108,6 +108,41 @@ inline Problem make_problem(const SimConfig& c)
             return (r <= R0) ? A0*(R0 - r) : 0.0;
         };
     }
+    else if (c.problem == "uniform_const") {
+        // Постоянное состояние. Схема обязана воспроизводить его точно: любой
+        // дрейф означает несогласованность реконструкции, потока или CT, а не
+        // физику. Параметры задаются в конфиге, чтобы проверять и случай
+        // B = 0, и наклонное поле с ненулевой скоростью.
+        const double rho0 = c.param("rho0", 1.0), p0 = c.param("p0", 1.0);
+        const double u0 = c.param("u0", 1.0), v0 = c.param("v0", -0.5);
+        const double w0 = c.param("w0", 0.25);
+        const double bx0 = c.param("Bx", 0.75), by0 = c.param("By", -0.4);
+        const double bz0 = c.param("Bz", 0.3);
+        p.prim = [=](double, double, double* q) {
+            q[QRHO] = rho0; q[QP] = p0;
+            q[QU] = u0; q[QV] = v0; q[QW] = w0; q[QBZ] = bz0;
+        };
+        // Az = Bx*y - By*x  =>  dAz/dy = Bx,  -dAz/dx = By
+        p.Az = [bx0, by0](double x, double y) { return bx0 * y - by0 * x; };
+    }
+    else if (c.problem == "mhd_blast") {
+        // Сильный МГД-взрыв в декартовой постановке (Balsara--Spicer 1999;
+        // тест Athena). Окружающее β = 2p/|B|^2 = 0.2 -- жёсткая проверка
+        // положительности: без отката HLLD->HLL давление уходит в минус.
+        // Область [-0.5, 0.5]^2, γ=5/3, t_end = 0.2.
+        const double rho0 = c.param("rho0", 1.0);
+        const double pin  = c.param("p_in", 10.0);
+        const double pout = c.param("p_out", 0.1);
+        const double rb   = c.param("r_blast", 0.1);
+        const double b0   = c.param("B0", 1.0);
+        const double bx0 = b0 / std::sqrt(2.0), by0 = b0 / std::sqrt(2.0);
+        p.prim = [=](double x, double y, double* q) {
+            q[QRHO] = rho0;
+            q[QP]   = (std::sqrt(x*x + y*y) < rb) ? pin : pout;
+            q[QU] = q[QV] = q[QW] = 0.0; q[QBZ] = 0.0;
+        };
+        p.Az = [bx0, by0](double x, double y) { return bx0 * y - by0 * x; };
+    }
     else {
         throw std::runtime_error("Unknown problem: " + c.problem);
     }

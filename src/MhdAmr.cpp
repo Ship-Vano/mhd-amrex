@@ -755,6 +755,47 @@ void MhdAmr::RefluxAll()
     }
 }
 
+// Диапазоны rho и p по иерархии, без перекрытых грубых ячеек. Нужны и для
+// сравнения с литературными цветовыми шкалами (ОТ, цилиндр, взрыв), и для
+// теста постоянного состояния, где max-min обязан быть строго нулём.
+void MhdAmr::PrintStateRanges() const
+{
+    Real rho_lo =  std::numeric_limits<Real>::max();
+    Real rho_hi = -std::numeric_limits<Real>::max();
+    Real p_lo   =  std::numeric_limits<Real>::max();
+    Real p_hi   = -std::numeric_limits<Real>::max();
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        iMultiFab covered;
+        const bool has_finer = (lev < finest_level);
+        if (has_finer) {
+            covered = amrex::makeFineMask(grids[lev], dmap[lev], grids[lev+1],
+                                          refRatio(lev), 0, 1);
+        }
+        for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
+            const Box& bx = mfi.validbox();
+            auto u = state_[lev].const_array(mfi);
+            Array4<const int> cov{};
+            if (has_finer) cov = covered.const_array(mfi);
+            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+                if (has_finer && cov(i,j,k)) return;      // представлен мелким уровнем
+                double uc[NCONS], q[NPRIM];
+                for (int n = 0; n < NCONS; ++n) uc[n] = u(i,j,k,n);
+                cons_to_prim(uc, q, cfg_.gamma);
+                rho_lo = std::min(rho_lo, Real(q[QRHO]));
+                rho_hi = std::max(rho_hi, Real(q[QRHO]));
+                p_lo   = std::min(p_lo,   Real(q[QP]));
+                p_hi   = std::max(p_hi,   Real(q[QP]));
+            });
+        }
+    }
+    ParallelDescriptor::ReduceRealMin(rho_lo);
+    ParallelDescriptor::ReduceRealMax(rho_hi);
+    ParallelDescriptor::ReduceRealMin(p_lo);
+    ParallelDescriptor::ReduceRealMax(p_hi);
+    amrex::Print() << "ranges: rho_min=" << rho_lo << " rho_max=" << rho_hi
+                   << " p_min=" << p_lo << " p_max=" << p_hi << "\n";
+}
+
 Real MhdAmr::TotalConserved(int comp) const
 {
     Real total = 0.0;
@@ -943,6 +984,21 @@ void MhdAmr::Evolve()
         const auto momentum_drift = [&](int n) {
             return std::abs(TotalConserved(n) - conserved0_[n]) / std::abs(conserved0_[URHO]);
         };
+        PrintStateRanges();
+        {   // финальная норма div B по всей иерархии (NUM-004)
+            Real divb = 0.0, bmax = 0.0;
+            for (int lev = 0; lev <= finest_level; ++lev) {
+                divb = std::max(divb, MaxDivB(lev));
+                for (int d = 0; d < AMREX_SPACEDIM; ++d)
+                    bmax = std::max(bmax, bface_[lev][d].norm0());
+            }
+            ParallelDescriptor::ReduceRealMax(bmax);
+            const Real dxmin = std::min(Geom(finest_level).CellSize(0),
+                                        Geom(finest_level).CellSize(1));
+            amrex::Print() << "divb: max_abs=" << divb
+                           << " normalized=" << (bmax > 0.0 ? dxmin * divb / bmax : divb)
+                           << "\n";
+        }
         amrex::Print() << "conservation: levels=" << finest_level + 1
                        << " reflux=" << (cfg_.reflux ? 1 : 0)
                        << " rho_rel_drift=" << drift(URHO)

@@ -1,0 +1,14 @@
+{
+  "problem": "uniform_const",
+  "problem_params": { "rho0": 1.0, "p0": 1.0, "u0": 1.0, "v0": -0.5, "w0": 0.25,
+                      "Bx": 0.75, "By": -0.4, "Bz": 0.3 },
+  "geometry": { "prob_lo": [0.0, 0.0], "prob_hi": [1.0, 1.0], "n_cell": [32, 32] },
+  "amr": { "max_level": 1, "ref_ratio": 2, "regrid_int": 4,
+           "blocking_factor": 8, "max_grid_size": 16,
+           "refine_grad_rho": -1.0, "refine_current": -1.0 },
+  "bc": { "x_lo": "periodic", "x_hi": "periodic", "y_lo": "periodic", "y_hi": "periodic" },
+  "time": { "cfl": 0.4, "t_max": 0.2, "integrator": "rk2" },
+  "scheme": { "gamma": 1.6666666666666667, "limiter": "mc", "emf_averaging": "gardiner_stone" },
+  "output": { "prefix": "plt_const", "output_dir": ".", "format": "native",
+              "diag_int": 1000, "write_plotfiles": false }
+}

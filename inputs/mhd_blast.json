@@ -1,0 +1,13 @@
+{
+  "problem": "mhd_blast",
+  "problem_params": { "rho0": 1.0, "p_in": 10.0, "p_out": 0.1, "r_blast": 0.1, "B0": 1.0 },
+  "geometry": { "prob_lo": [-0.5, -0.5], "prob_hi": [0.5, 0.5], "n_cell": [128, 128] },
+  "amr": { "max_level": 0, "ref_ratio": 2, "regrid_int": 4,
+           "blocking_factor": 8, "max_grid_size": 64,
+           "refine_grad_rho": 0.25, "refine_current": -1.0 },
+  "bc": { "x_lo": "periodic", "x_hi": "periodic", "y_lo": "periodic", "y_hi": "periodic" },
+  "time": { "cfl": 0.4, "t_max": 0.2, "integrator": "rk2" },
+  "scheme": { "gamma": 1.6666666666666667, "limiter": "mc", "emf_averaging": "gardiner_stone" },
+  "output": { "prefix": "plt_blast", "output_dir": ".", "format": "native",
+              "diag_int": 50, "write_plotfiles": false }
+}

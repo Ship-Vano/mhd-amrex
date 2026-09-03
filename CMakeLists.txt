@@ -137,6 +137,36 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
   add_test(NAME solver.compute_only
            COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  # Обязательная матрица канонических задач (PROGRAM_PLAN). Диапазоны rho и p --
+  # литературные цветовые шкалы, поэтому тест ловит не только падение, но и
+  # смещение фронта или потерю признака.
+  add_test(NAME canonical.constant_state
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_solver_case.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/uniform_const.json
+                   --exact-constant)
+  add_test(NAME canonical.orszag_tang
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_solver_case.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/orszag_tang_uniform.json
+                   --rho-min 0.0913 --rho-max 0.4915
+                   --p-min 0.0281 --p-max 0.5045 --tol 0.08)
+  add_test(NAME canonical.rotor
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_solver_case.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/rotor_uniform.json
+                   --rho-min 0.5885 --rho-max 11.55
+                   --p-min 0.0354 --p-max 1.855 --tol 0.08)
+  # Взрыв в среде с beta = 0.2: здесь откат HLLD->HLL обязан срабатывать, но
+  # состояние должно остаться положительным, а div B -- на уровне округления.
+  add_test(NAME canonical.mhd_blast
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_solver_case.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/mhd_blast.json
+                   --rho-min 0.1526 --rho-max 2.506
+                   --p-min 0.0785 --p-max 0.9409 --tol 0.08
+                   --max-fallbacks 200)
+
   # Гейт T07: согласование газовых потоков на стыке уровней. Тест сам проверяет,
   # что стык уровней вообще существует и что при reflux=false дефект появляется.
   add_test(NAME amr.conservation
