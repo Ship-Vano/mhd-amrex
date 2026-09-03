@@ -250,6 +250,47 @@ void MhdAmr::InitLevelData(int lev)
     }
 }
 
+// Пересчёт клеточного B после интерполяции при regrid.
+//
+// Полная энергия переносится cell_cons_interp как консервативный скаляр, а
+// граневое поле -- face_divfree_interp. Их магнитные части не совпадают:
+// измерено, что ½|B|² скачет на ~1e-5 относительных на каждом перестроении.
+// Если оставить UENE неизменной, эту разницу целиком поглощает тепловая
+// энергия, то есть давление. Здесь UENE сдвигается на изменение ½|B|², и тогда
+// точно сохраняется газовая (тепловая + кинетическая) энергия, а полная --
+// меняется на ошибку интерполяции поля. Что именно сохранять -- решение D-007.
+void MhdAmr::SyncCellBAfterRegrid(int lev)
+{
+    if (!cfg_.regrid_preserve_pressure) { SyncCellB(lev); return; }
+
+    // ВАЖНО: AmrCore выставляет grids[lev]/dmap[lev] уже ПОСЛЕ возврата из
+    // MakeNewLevelFromCoarse/RemakeLevel, поэтому раскладку берём у самого
+    // state_[lev], который только что определил AllocLevel.
+    MultiFab me_before(state_[lev].boxArray(), state_[lev].DistributionMap(), 1, 0);
+    for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
+        const Box& bx = mfi.validbox();
+        auto u = state_[lev].const_array(mfi);
+        auto m = me_before.array(mfi);
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+            m(i,j,k) = Real(0.5) * (u(i,j,k,UBX)*u(i,j,k,UBX)
+                                  + u(i,j,k,UBY)*u(i,j,k,UBY)
+                                  + u(i,j,k,UBZ)*u(i,j,k,UBZ));
+        });
+    }
+    SyncCellB(lev);
+    for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
+        const Box& bx = mfi.validbox();
+        auto u = state_[lev].array(mfi);
+        auto m = me_before.const_array(mfi);
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+            const Real me_after = Real(0.5) * (u(i,j,k,UBX)*u(i,j,k,UBX)
+                                             + u(i,j,k,UBY)*u(i,j,k,UBY)
+                                             + u(i,j,k,UBZ)*u(i,j,k,UBZ));
+            u(i,j,k,UENE) += me_after - m(i,j,k);
+        });
+    }
+}
+
 void MhdAmr::MakeNewLevelFromScratch(int lev, Real, const BoxArray& ba,
                                      const DistributionMapping& dm)
 {
@@ -282,7 +323,7 @@ void MhdAmr::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray& ba,
                                      refRatio(lev-1), &face_divfree_interp, fbcr, 0);
     }
     FillPhysicalFaceBoundary(lev);
-    SyncCellB(lev);
+    SyncCellBAfterRegrid(lev);
 }
 
 void MhdAmr::RemakeLevel(int lev, Real time, const BoxArray& ba,
@@ -304,7 +345,7 @@ void MhdAmr::RemakeLevel(int lev, Real time, const BoxArray& ba,
     for (int d = 0; d < AMREX_SPACEDIM; ++d)
         MultiFab::Copy(bface_[lev][d], new_b[d], 0, 0, 1, NGROW);
     FillPhysicalFaceBoundary(lev);
-    SyncCellB(lev);
+    SyncCellBAfterRegrid(lev);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +803,45 @@ void MhdAmr::RefluxAll()
 // Диапазоны rho и p по иерархии, без перекрытых грубых ячеек. Нужны и для
 // сравнения с литературными цветовыми шкалами (ОТ, цилиндр, взрыв), и для
 // теста постоянного состояния, где max-min обязан быть строго нулём.
+// Σ по иерархии магнитной (½|B|²) и тепловой (e − ½ρ|v|² − ½|B|²) энергий.
+// Полная энергия интерполируется при regrid как консервативный скаляр, а поле B
+// -- отдельным бездивергентным оператором; эти две части могут разъехаться, и
+// разделение позволяет это увидеть, а не предполагать.
+amrex::Real MhdAmr::TotalEnergyPart(int which) const
+{
+    Real total = 0.0;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        const auto dx = Geom(lev).CellSizeArray();
+        const Real dv = dx[0] * dx[1];
+        iMultiFab covered;
+        const bool has_finer = (lev < finest_level);
+        if (has_finer)
+            covered = amrex::makeFineMask(grids[lev], dmap[lev], grids[lev+1],
+                                          refRatio(lev), 0, 1);
+        Real sum = 0.0;
+        for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
+            const Box& bx = mfi.validbox();
+            auto u = state_[lev].const_array(mfi);
+            Array4<const int> cov{};
+            if (has_finer) cov = covered.const_array(mfi);
+            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+                if (has_finer && cov(i,j,k)) return;
+                const Real rho = u(i,j,k,URHO);
+                const Real me = Real(0.5) * (u(i,j,k,UBX)*u(i,j,k,UBX)
+                                           + u(i,j,k,UBY)*u(i,j,k,UBY)
+                                           + u(i,j,k,UBZ)*u(i,j,k,UBZ));
+                const Real ke = Real(0.5) * (u(i,j,k,UMX)*u(i,j,k,UMX)
+                                           + u(i,j,k,UMY)*u(i,j,k,UMY)
+                                           + u(i,j,k,UMZ)*u(i,j,k,UMZ)) / rho;
+                sum += (which == 0) ? me : (u(i,j,k,UENE) - ke - me);
+            });
+        }
+        total += sum * dv;
+    }
+    ParallelDescriptor::ReduceRealSum(total);
+    return total;
+}
+
 void MhdAmr::PrintStateRanges() const
 {
     Real rho_lo =  std::numeric_limits<Real>::max();
@@ -935,7 +1015,32 @@ void MhdAmr::Evolve()
     while (t_ < cfg_.t_max && step_ < cfg_.max_steps) {
         if (max_level > 0 && cfg_.regrid_int > 0 &&
             step_ > 0 && step_ % cfg_.regrid_int == 0) {
+            // Перестроение сетки обязано сохранять интегралы: интерполяция
+            // cell_cons_interp консервативна по построению. Измеряем скачок,
+            // а не предполагаем его отсутствие.
+            const Real mass_before = TotalConserved(URHO);
+            const Real ene_before  = TotalConserved(UENE);
+            const Real mag_before  = TotalEnergyPart(0);
+            const Real th_before   = TotalEnergyPart(1);
             regrid(0, t_);
+            const Real mass_after = TotalConserved(URHO);
+            const Real ene_after  = TotalConserved(UENE);
+            const Real mag_after  = TotalEnergyPart(0);
+            const Real th_after   = TotalEnergyPart(1);
+            if (std::abs(mag_after - mag_before) / std::abs(mag_before) > 1.0e-14)
+                amrex::Print() << "  regrid step " << step_
+                               << ": d(total E)/E=" << std::abs(ene_after-ene_before)/std::abs(ene_before)
+                               << "  d(magnetic)/mag=" << std::abs(mag_after-mag_before)/std::abs(mag_before)
+                               << "  d(thermal)/th=" << std::abs(th_after-th_before)/std::abs(th_before)
+                               << "\n";
+            const Real dm = std::abs(mass_after - mass_before) / std::abs(mass_before);
+            const Real de = std::abs(ene_after - ene_before) / std::abs(ene_before);
+            regrid_mass_jump_ = std::max(regrid_mass_jump_, dm);
+            regrid_ene_jump_  = std::max(regrid_ene_jump_, de);
+            if (cfg_.diag_int > 0 && (dm > 1.0e-12 || de > 1.0e-12)) {
+                amrex::Print() << "  regrid at step " << step_
+                               << ": rho jump=" << dm << " ene jump=" << de << "\n";
+            }
         }
         Real dt = std::min(ComputeDt(), cfg_.t_max - t_);
         AdvanceHierarchy(dt);
@@ -955,7 +1060,11 @@ void MhdAmr::Evolve()
                            << "  levels=" << finest_level + 1
                            << "  hlld_fallbacks=" << fb
                            << "  floor_events=" << fe
-                           << "  nonpositive_cells=" << nonpos << "\n";
+                           << "  nonpositive_cells=" << nonpos
+                           << "  rho_drift=" << (conserved0_set_
+                                 ? std::abs(TotalConserved(URHO) - conserved0_[URHO])
+                                   / std::abs(conserved0_[URHO]) : Real(0.0))
+                           << "\n";
         }
         const bool plot_now =
             (cfg_.plot_int > 0 && step_ % cfg_.plot_int == 0) ||
@@ -1009,6 +1118,8 @@ void MhdAmr::Evolve()
                            << " normalized=" << (bmax > 0.0 ? dxmin * divb / bmax : divb)
                            << "\n";
         }
+        amrex::Print() << "regrid_jump: rho=" << regrid_mass_jump_
+                       << " ene=" << regrid_ene_jump_ << "\n";
         amrex::Print() << "conservation: levels=" << finest_level + 1
                        << " reflux=" << (cfg_.reflux ? 1 : 0)
                        << " rho_rel_drift=" << drift(URHO)

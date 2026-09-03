@@ -44,6 +44,9 @@ def run(executable: str, config: Path) -> dict:
         print(result.stdout)
         raise SystemExit("solver printed no conservation diagnostic")
     out = {}
+    jump = re.search(r"regrid_jump: rho=([0-9.eE+-]+) ene=([0-9.eE+-]+)", result.stdout)
+    out["regrid_jump_rho"] = float(jump.group(1)) if jump else 0.0
+    out["regrid_jump_ene"] = float(jump.group(2)) if jump else 0.0
     for key in FIELDS + ("levels", "reflux"):
         match = re.search(rf"{key}=([0-9.eE+-]+)", line)
         if match is None:
@@ -64,6 +67,12 @@ def main() -> int:
                         help="max relative drift with reflux enabled")
     parser.add_argument("--min-defect", type=float, default=1.0e-6,
                         help="min drift that must appear when reflux is disabled")
+    parser.add_argument("--max-regrid-jump", type=float,
+                        help="max relative jump of the hierarchy integrals across a "
+                             "single regrid; only meaningful when regridding is on")
+    parser.add_argument("--skip-defect-check", action="store_true",
+                        help="do not re-run with reflux disabled (the static-grid "
+                             "variant already proves the defect appears)")
     args = parser.parse_args()
 
     on = run(args.executable, args.config)
@@ -86,6 +95,23 @@ def main() -> int:
             print(f"regression: {key}={on[key]:.6g} exceeds {args.tol:.6g} with reflux on",
                   file=sys.stderr)
             return 1
+
+    if args.max_regrid_jump is not None:
+        # Regridding must move no mass or energy at all: cell_cons_interp is
+        # conservative by construction, so any jump here is a real defect --
+        # distinct from the thermal/magnetic *split* shifting, which is
+        # interpolation truncation error and is expected.
+        for key in ("regrid_jump_rho", "regrid_jump_ene"):
+            if not (on[key] <= args.max_regrid_jump):
+                print(f"regression: {key}={on[key]:.6g} exceeds "
+                      f"{args.max_regrid_jump:.6g}", file=sys.stderr)
+                return 1
+        print(f"regrid jumps: rho={on['regrid_jump_rho']:.3g} "
+              f"ene={on['regrid_jump_ene']:.3g}")
+
+    if args.skip_defect_check:
+        print(f"reflux on : " + "  ".join(f"{k}={on[k]:.4g}" for k in FIELDS))
+        return 0
 
     # Same configuration, reflux disabled: the defect must be visible.
     config = json.loads(args.config.read_text())

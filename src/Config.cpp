@@ -128,7 +128,7 @@ SimConfig SimConfig::from_json_file(const std::string& path)
         }
         if (j.contains("amr")) {
             const auto& a = j["amr"];
-            reject_unknown_keys(a, {"max_level", "ref_ratio", "regrid_int", "blocking_factor", "max_grid_size", "n_error_buf", "refine_grad_rho", "refine_current", "reflux"}, "amr");
+            reject_unknown_keys(a, {"max_level", "ref_ratio", "regrid_int", "blocking_factor", "max_grid_size", "n_error_buf", "refine_grad_rho", "refine_current", "reflux", "regrid_preserve_pressure"}, "amr");
             c.max_level = a.value("max_level", c.max_level);
             c.ref_ratio = a.value("ref_ratio", c.ref_ratio);
             c.regrid_int = a.value("regrid_int", c.regrid_int);
@@ -138,6 +138,7 @@ SimConfig SimConfig::from_json_file(const std::string& path)
             c.refine_grad_rho = a.value("refine_grad_rho", c.refine_grad_rho);
             c.refine_current = a.value("refine_current", c.refine_current);
             c.reflux = a.value("reflux", c.reflux);
+            c.regrid_preserve_pressure = a.value("regrid_preserve_pressure", c.regrid_preserve_pressure);
         }
         if (j.contains("bc")) {
             const auto& b = j["bc"];

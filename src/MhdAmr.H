@@ -77,6 +77,8 @@ private:
     // Σ по иерархии без учёта перекрытых грубых ячеек: диагностика сохранения.
     amrex::Real TotalConserved(int comp) const;
     void PrintStateRanges() const;   // min/max rho и p по иерархии
+    // which = 0 -> магнитная энергия, 1 -> тепловая
+    amrex::Real TotalEnergyPart(int which) const;
 
     // --- сервис ---------------------------------------------------------------
     void AllocLevel(int lev, const amrex::BoxArray& ba,
@@ -88,6 +90,9 @@ private:
                         amrex::Real time);
     void FillPhysicalFaceBoundary(int lev);             // ГУ для граневых B
     void SyncCellB(int lev);                            // интерполяция граней в центры (RT0)
+    // SyncCellB + компенсация полной энергии на изменение ½|B|², чтобы при
+    // перестроении сетки не менялось давление (см. cfg_.regrid_preserve_pressure)
+    void SyncCellBAfterRegrid(int lev);
     amrex::Real MaxDivB(int lev) const;
     amrex::Long CountNonPositiveCells() const;          // ячейки, требующие floor ρ/p
     void WritePlotFile(int step, amrex::Real time);
@@ -118,6 +123,9 @@ private:
     // Полные сохраняющиеся величины при t = 0 (для диагностики дрейфа).
     std::array<amrex::Real, NCONS> conserved0_ {};
     bool conserved0_set_ = false;
+    // Максимальный относительный скачок интегралов на одном regrid.
+    amrex::Real regrid_mass_jump_ = 0.0;
+    amrex::Real regrid_ene_jump_  = 0.0;
 
     // Диагностика положительности (инвариант 1 в AGENTS.md): накопительный
     // счётчик срабатываний HLLD→HLL за весь расчёт. На канонических тестах = 0.

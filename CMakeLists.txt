@@ -174,6 +174,14 @@ if(BUILD_TESTING)
 
   # Гейт T07: согласование газовых потоков на стыке уровней. Тест сам проверяет,
   # что стык уровней вообще существует и что при reflux=false дефект появляется.
+  # Перестроение сетки обязано не двигать интегралы: cell_cons_interp
+  # консервативен по построению. Расхождение тепловой и магнитной частей при
+  # этом ожидаемо (ошибка интерполяции нелинейных величин) и здесь не гейтится.
+  add_test(NAME amr.regrid_conservation
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_amr_conservation.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/amr_regrid_conservation.json
+                   --tol 1e-6 --max-regrid-jump 1e-12 --skip-defect-check)
   add_test(NAME amr.conservation
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_amr_conservation.py
                    --executable $<TARGET_FILE:mhd2d>
