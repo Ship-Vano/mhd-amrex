@@ -88,6 +88,11 @@ endif()
 add_executable(mhd2d_verify tests/standalone_verify.cpp)
 target_include_directories(mhd2d_verify PRIVATE src/kernels)
 
+# Независимый эталон Брио–Ву (фаза T06): центральная схема Куртганова–Тадмора.
+# Намеренно НЕ подключает src/kernels — эталон не должен разделять код со
+# схемой, которую проверяет.
+add_executable(mhd2d_briowu_reference tests/briowu_reference.cpp)
+
 add_executable(mhd2d_kernel_unit tests/kernel_unit.cpp)
 target_include_directories(mhd2d_kernel_unit PRIVATE src/kernels)
 
@@ -104,7 +109,7 @@ target_include_directories(mhd2d_config_validate PRIVATE src)
 target_link_libraries(mhd2d_config_validate PRIVATE nlohmann_json::nlohmann_json)
 
 # --- предупреждения --------------------------------------------------------------
-foreach(tgt mhd2d mhd2d_verify mhd2d_kernel_unit mhd2d_kernel_numerics mhd2d_config_validate)
+foreach(tgt mhd2d mhd2d_verify mhd2d_kernel_unit mhd2d_kernel_numerics mhd2d_config_validate mhd2d_briowu_reference)
   target_compile_options(${tgt} PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra>)
 endforeach()
@@ -137,6 +142,15 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
   add_test(NAME solver.compute_only
            COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  # Гейт T06: две независимые схемы (центральная KT без решателя Римана и
+  # HLLD+MUSCL) должны сходиться к одному слабому решению, включая составную
+  # волну. Тест падает и если они разошлись, и если эталон не сошёлся сам.
+  add_test(NAME briowu.independent_reference
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_briowu_reference.py
+                   --reference $<TARGET_FILE:mhd2d_briowu_reference>
+                   --verify $<TARGET_FILE:mhd2d_verify>
+                   --fronts ${CMAKE_CURRENT_SOURCE_DIR}/scripts/briowu_fronts.py)
+
   # ADR 0001 (гейт TDG0): слой ядер не должен структурно зависеть от AMReX.
   add_test(NAME arch.kernel_purity
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_kernel_purity.py
