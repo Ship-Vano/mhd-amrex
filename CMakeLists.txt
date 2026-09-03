@@ -142,6 +142,12 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
   add_test(NAME solver.compute_only
            COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  # Обязательная матрица: схема не должна зависеть от разбиения по рангам.
+  add_test(NAME mpi.decomposition_parity
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_mpi_parity.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/amr_conservation.json)
+
   # NEW-004: режимы аблации задаются конфигом и действительно влияют на результат.
   add_test(NAME config.ablation_modes
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_ablation_modes.py

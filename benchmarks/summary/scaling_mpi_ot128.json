@@ -1,0 +1,99 @@
+{
+  "caveat": "single workstation, no pinning, no exclusive access; on a heterogeneous CPU speedup saturates once the performance cores are full -- diagnostic, not a cluster scaling result",
+  "config": "inputs/orszag_tang_uniform.json",
+  "mode": "mpi",
+  "n_cell": [
+    128,
+    128
+  ],
+  "repeats": 5,
+  "rows": [
+    {
+      "cells_per_unit": 16384.0,
+      "efficiency": 1.0,
+      "p": 1,
+      "ranges": [
+        0.09125315895,
+        0.4912153808,
+        0.02800566165,
+        0.50393639
+      ],
+      "result_identical_to_serial": true,
+      "speedup": 1.0,
+      "timing": {
+        "mad_s": 0.0011993750000005576,
+        "max_s": 2.2823407919999994,
+        "median_s": 2.262919792,
+        "min_s": 2.2617204169999994,
+        "samples_s": [
+          2.2623320000000002,
+          2.2823407919999994,
+          2.2617204169999994,
+          2.262919792,
+          2.264304791999999
+        ]
+      }
+    },
+    {
+      "cells_per_unit": 8192.0,
+      "efficiency": 0.9444644052225429,
+      "p": 2,
+      "ranges": [
+        0.09125315895,
+        0.4912153808,
+        0.02800566165,
+        0.50393639
+      ],
+      "result_identical_to_serial": true,
+      "speedup": 1.8889288104450859,
+      "timing": {
+        "mad_s": 0.0004640829999988938,
+        "max_s": 1.2082493330000013,
+        "median_s": 1.1979910409999999,
+        "min_s": 1.197526958000001,
+        "samples_s": [
+          1.1979910409999999,
+          1.1977975829999998,
+          1.2019130000000011,
+          1.2082493330000013,
+          1.197526958000001
+        ]
+      }
+    },
+    {
+      "cells_per_unit": 4096.0,
+      "efficiency": 0.8538650307633708,
+      "p": 4,
+      "ranges": [
+        0.09125315895,
+        0.4912153808,
+        0.02800566165,
+        0.50393639
+      ],
+      "result_identical_to_serial": true,
+      "speedup": 3.4154601230534833,
+      "timing": {
+        "mad_s": 0.0019406669999995074,
+        "max_s": 0.6808187920000002,
+        "median_s": 0.6625519579999981,
+        "min_s": 0.6606112909999986,
+        "samples_s": [
+          0.6625519579999981,
+          0.6615253330000002,
+          0.6606112909999986,
+          0.6808187920000002,
+          0.675648166000002
+        ]
+      }
+    }
+  ],
+  "schema_version": 1,
+  "topology": {
+    "efficiency_cores": 6,
+    "logical_cpus": 10,
+    "performance_cores": 4,
+    "physical_cpus": 10,
+    "platform": "macOS-15.7.3-arm64-arm-64bit"
+  },
+  "warmup_discarded": 1
+}
