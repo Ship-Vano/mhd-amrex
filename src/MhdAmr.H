@@ -23,6 +23,9 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_BCRec.H>
 #include <AMReX_PhysBCFunct.H>
+#include <AMReX_YAFluxRegister.H>
+
+#include <memory>
 
 #include "Config.H"
 #include "Problems.H"
@@ -62,6 +65,18 @@ private:
     void ApplyUpdates(int lev, amrex::Real dt);         // газ (Годунов) + Фарадей (Стокс)
     void AverageDownAll();                              // согласование уровней
 
+    // --- консервативность на стыке уровней (reflux) -------------------------
+    // Без подциклирования шаг Δt одинаков на всех уровнях, поэтому невязка
+    // грубой и мелкой аппроксимаций потока на границе уровней снимается одним
+    // регистром потоков: грубая ячейка у стыка получает поправку
+    //   ΔU = ±Δt/Δx_c · (F_c − ⟨F_f⟩).
+    // Плоскостные Bx, By исключены: их ведёт CT, и рефлюкс разрушил бы div B = 0.
+    void DefineFluxRegisters();                         // (пере)определение после regrid
+    void AccumulateFluxRegisters(amrex::Real dt);       // CrseAdd / FineAdd
+    void RefluxAll();                                   // коррекция грубых ячеек
+    // Σ по иерархии без учёта перекрытых грубых ячеек: диагностика сохранения.
+    amrex::Real TotalConserved(int comp) const;
+
     // --- сервис ---------------------------------------------------------------
     void AllocLevel(int lev, const amrex::BoxArray& ba,
                     const amrex::DistributionMapping& dm);
@@ -89,9 +104,19 @@ private:
     amrex::Vector<amrex::MultiFab> state0_;
     amrex::Vector<amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>> bface0_;
 
+    // flux_reg_[lev] — регистр стыка уровней lev-1 / lev (определён при lev >= 1).
+    // Владение через unique_ptr: YAFluxRegister::define() не идемпотентен
+    // (дописывает m_cfp_localindex/m_cfp_fab), поэтому после каждой
+    // перестройки сетки регистр создаётся заново, а не переопределяется.
+    amrex::Vector<std::unique_ptr<amrex::YAFluxRegister>> flux_reg_;
+    bool flux_reg_stale_ = true;            // сетки изменились -> переопределить
+
     amrex::Vector<amrex::BCRec> bcrec_;     // ГУ клеточных величин для FillPatch
     amrex::Real t_ = 0.0;
     int step_ = 0;
+    // Полные сохраняющиеся величины при t = 0 (для диагностики дрейфа).
+    std::array<amrex::Real, NCONS> conserved0_ {};
+    bool conserved0_set_ = false;
 
     // Диагностика положительности (инвариант 1 в AGENTS.md): накопительный
     // счётчик срабатываний HLLD→HLL за весь расчёт. На канонических тестах = 0.

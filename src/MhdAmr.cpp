@@ -192,6 +192,9 @@ void MhdAmr::AllocLevel(int lev, const BoxArray& ba, const DistributionMapping& 
         flux_[lev][d].define(fba, dm, NCONS, 1);
     }
     emf_[lev].define(amrex::convert(ba, IntVect::TheNodeVector()), dm, 1, 0);
+    // Регистр потоков строится на конкретных BoxArray/DistributionMapping двух
+    // соседних уровней, поэтому любая перестройка сетки его обесценивает.
+    flux_reg_stale_ = true;
 }
 
 void MhdAmr::ClearLevel(int lev)
@@ -200,6 +203,7 @@ void MhdAmr::ClearLevel(int lev)
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         bface_[lev][d].clear(); bface0_[lev][d].clear(); flux_[lev][d].clear();
     }
+    flux_reg_stale_ = true;
 }
 
 // НУ уровня: грани — через векторный потенциал Az (div B = 0 машинно),
@@ -689,9 +693,84 @@ void MhdAmr::EulerStage(Real dt)
 
         ComputeFluxesAndEmf(lev);
     }
+    const bool do_reflux = cfg_.reflux && finest_level > 0;
+    if (do_reflux) {
+        if (flux_reg_stale_) DefineFluxRegisters();
+        AccumulateFluxRegisters(dt);
+    }
     SyncEmfAcrossLevels();
     for (int lev = 0; lev <= finest_level; ++lev) ApplyUpdates(lev, dt);
+    // Порядок важен: рефлюкс правит грубые ячейки У СТЫКА (не перекрытые),
+    // average_down затем перезаписывает только перекрытые — они не конфликтуют.
+    if (do_reflux) RefluxAll();
     AverageDownAll();
+}
+
+// ---------------------------------------------------------------------------
+// Согласование газовых потоков на границах уровней (reflux).
+//
+// Шаг не подциклируется: Δt одинаков на всех уровнях, поэтому регистр потоков
+// накапливает за одну стадию грубый вклад (CrseAdd) и мелкий (FineAdd), а
+// Reflux добавляет разность к грубым ячейкам, примыкающим к мелкой сетке.
+// Величины UBX, UBY исключены: плоскостное поле ведёт CT через узловые ЭДС,
+// и рефлюкс газового потока разрушил бы дискретную бездивергентность.
+// ---------------------------------------------------------------------------
+void MhdAmr::DefineFluxRegisters()
+{
+    flux_reg_.resize(max_level + 1);
+    for (int lev = 1; lev <= finest_level; ++lev) {
+        flux_reg_[lev] = std::make_unique<amrex::YAFluxRegister>(
+            grids[lev], grids[lev-1], dmap[lev], dmap[lev-1],
+            Geom(lev), Geom(lev-1), refRatio(lev-1), lev, NCONS);
+    }
+    for (int lev = finest_level + 1; lev <= max_level; ++lev) flux_reg_[lev].reset();
+    flux_reg_stale_ = false;
+}
+
+void MhdAmr::AccumulateFluxRegisters(Real dt)
+{
+    for (int lev = 1; lev <= finest_level; ++lev) flux_reg_[lev]->reset();
+
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        const auto dxa = Geom(lev).CellSizeArray();
+        const Real dx[AMREX_SPACEDIM] = {AMREX_D_DECL(dxa[0], dxa[1], dxa[2])};
+        // MFIter обходит клеточную раскладку уровня lev: для CrseAdd это
+        // грубая сторона регистра lev+1, для FineAdd — мелкая сторона lev.
+        for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
+            const std::array<FArrayBox const*, AMREX_SPACEDIM> f
+                {AMREX_D_DECL(&flux_[lev][0][mfi], &flux_[lev][1][mfi], &flux_[lev][2][mfi])};
+            if (lev < finest_level)
+                flux_reg_[lev+1]->CrseAdd(mfi, f, dx, dt, RunOn::Cpu);
+            if (lev > 0)
+                flux_reg_[lev]->FineAdd(mfi, f, dx, dt, RunOn::Cpu);
+        }
+    }
+}
+
+void MhdAmr::RefluxAll()
+{
+    for (int lev = 1; lev <= finest_level; ++lev) {
+        flux_reg_[lev]->Reflux(state_[lev-1], URHO, URHO, UENE - URHO + 1);  // ρ, ρv, e
+        flux_reg_[lev]->Reflux(state_[lev-1], UBZ,  UBZ,  1);                // Bz
+    }
+}
+
+Real MhdAmr::TotalConserved(int comp) const
+{
+    Real total = 0.0;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+        const auto dx = Geom(lev).CellSizeArray();
+        MultiFab tmp(grids[lev], dmap[lev], 1, 0);
+        MultiFab::Copy(tmp, state_[lev], comp, 0, 1, 0);
+        if (lev < finest_level) {
+            // Перекрытые грубые ячейки не считаем — их представляет мелкий уровень.
+            MultiFab mask = amrex::makeFineMask(grids[lev], dmap[lev], grids[lev+1],
+                                                refRatio(lev), Real(1.0), Real(0.0));
+            MultiFab::Multiply(tmp, mask, 0, 0, 1, 0);
+        }
+        total += tmp.sum(0) * dx[0] * dx[1];   // MultiFab::sum уже редуцирует по рангам
+    }
+    return total;
 }
 
 void MhdAmr::AverageDownAll()
@@ -797,6 +876,9 @@ void MhdAmr::InitData()
 {
     InitFromScratch(0.0);    // строит иерархию: MakeNewLevelFromScratch + ErrorEst
     AverageDownAll();
+    // Опорные интегралы для диагностики консервативности (см. Evolve).
+    for (int n = 0; n < NCONS; ++n) conserved0_[n] = TotalConserved(n);
+    conserved0_set_ = true;
     if (cfg_.write_plotfiles) WritePlotFile(0, 0.0);
 }
 
@@ -842,6 +924,44 @@ void MhdAmr::Evolve()
     amrex::Print() << "Evolve finished: " << step_ << " steps, t=" << t_
                    << ", hlld_fallbacks=" << fb_total
                    << ", nonpositive_cells=" << CountNonPositiveCells() << "\n";
+
+    // Диагностика консервативности иерархии. На полностью периодической задаче
+    // потока через внешнюю границу нет, поэтому Σρ и Σe должны сохраняться с
+    // точностью округления — но только если газовые потоки согласованы на
+    // стыках уровней (reflux). Без рефлюкса дрейф на несколько порядков выше:
+    // именно это измеряет tests/check_amr_conservation.py.
+    if (conserved0_set_) {
+        const auto drift = [&](int n) {
+            const Real now = TotalConserved(n);
+            const Real ref = conserved0_[n];
+            return (std::abs(ref) > 0.0) ? std::abs(now - ref) / std::abs(ref)
+                                         : std::abs(now - ref);
+        };
+        // Суммарный импульс периодического вихря Орзага–Танга равен нулю, и
+        // относительная невязка по нему не определена. Нормируем на полную
+        // массу: получается ошибка в единицах скорости.
+        const auto momentum_drift = [&](int n) {
+            return std::abs(TotalConserved(n) - conserved0_[n]) / std::abs(conserved0_[URHO]);
+        };
+        amrex::Print() << "conservation: levels=" << finest_level + 1
+                       << " reflux=" << (cfg_.reflux ? 1 : 0)
+                       << " rho_rel_drift=" << drift(URHO)
+                       << " mx_vel_drift=" << momentum_drift(UMX)
+                       << " my_vel_drift=" << momentum_drift(UMY)
+                       << " ene_rel_drift=" << drift(UENE) << "\n";
+        // Доля перекрытия важна для интерпретации: если мелкий уровень покрывает
+        // весь периодический домен, стыка уровней нет и рефлюкс тождественно
+        // ничего не делает — такой прогон не проверяет консервативность.
+        for (int lev = 0; lev <= finest_level; ++lev) {
+            Long covered = 0;
+            if (lev < finest_level) {
+                const IntVect& rr = refRatio(lev);
+                covered = grids[lev+1].numPts() / (rr[0] * rr[1]);
+            }
+            amrex::Print() << "  level " << lev << ": cells=" << grids[lev].numPts()
+                           << " covered_by_finer=" << covered << "\n";
+        }
+    }
 }
 
 } // namespace mhd

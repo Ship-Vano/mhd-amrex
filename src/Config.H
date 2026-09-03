@@ -38,6 +38,10 @@ struct SimConfig {
     int n_error_buf     = 2;
     double refine_grad_rho = 0.25; // порог |Δρ|/ρ для тегирования
     double refine_current  = -1.0; // порог |jz|·h (выкл. если < 0)
+    // Согласование газовых потоков на границах уровней. Значение false
+    // оставлено только для регрессии, которая измеряет сам дефект: без
+    // рефлюкса иерархия не консервативна (см. tests/check_amr_conservation.py).
+    bool reflux = true;
 
     // --- граничные условия (по сторонам) ----------------------------------
     BcType bc_xlo = BcType::Periodic, bc_xhi = BcType::Periodic;

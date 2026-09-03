@@ -137,6 +137,12 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
   add_test(NAME solver.compute_only
            COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  # Гейт T07: согласование газовых потоков на стыке уровней. Тест сам проверяет,
+  # что стык уровней вообще существует и что при reflux=false дефект появляется.
+  add_test(NAME amr.conservation
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_amr_conservation.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/amr_conservation.json)
   add_test(NAME manifest.repeatable
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_manifest_repeat.py
                    --runner ${CMAKE_CURRENT_SOURCE_DIR}/scripts/write_run_manifest.py
