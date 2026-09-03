@@ -142,6 +142,11 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
   add_test(NAME solver.compute_only
            COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  # NEW-004: режимы аблации задаются конфигом и действительно влияют на результат.
+  add_test(NAME config.ablation_modes
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_ablation_modes.py
+                   --executable $<TARGET_FILE:mhd2d>)
+
   # Гейт T06: две независимые схемы (центральная KT без решателя Римана и
   # HLLD+MUSCL) должны сходиться к одному слабому решению, включая составную
   # волну. Тест падает и если они разошлись, и если эталон не сошёлся сам.

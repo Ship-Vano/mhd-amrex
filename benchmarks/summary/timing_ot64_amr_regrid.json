@@ -1,0 +1,58 @@
+{
+  "caveat": "single workstation, no pinning, no exclusive access: diagnostic timing, not a scaling result",
+  "config": {
+    "cfl": 0.4,
+    "integrator": "rk2",
+    "max_level": 1,
+    "n_cell": [
+      64,
+      64
+    ],
+    "path": "inputs/amr_regrid_conservation.json",
+    "problem": "orszag_tang",
+    "reflux": true,
+    "t_max": 0.05
+  },
+  "derived": {
+    "base_cells": 4096,
+    "us_per_base_cell_step": 5.2927039893897785
+  },
+  "kind": "compute_only",
+  "label": "OT 64^2 + 1 AMR level (regrid every 4), compute-only",
+  "machine": {
+    "cpu_count": 10,
+    "executable": "build/release/mhd2d",
+    "executable_mtime": "2026-09-03T07:25:25Z",
+    "git_commit": "f247917e6a1de30e27d21895ed047257f2da6543",
+    "git_dirty": true,
+    "machine": "arm64",
+    "omp_num_threads": "<unset>",
+    "platform": "macOS-15.7.3-arm64-arm-64bit",
+    "processor": "arm",
+    "python": "3.9.6"
+  },
+  "repeats": 5,
+  "run": {
+    "floor_events": 0,
+    "hlld_fallbacks": 0,
+    "nonpositive_cells": 0,
+    "steps": 37,
+    "t_end": 0.05
+  },
+  "schema_version": 1,
+  "timing": {
+    "mad_s": 0.033495208000000165,
+    "max_s": 0.873806167,
+    "median_s": 0.8021198749999998,
+    "min_s": 0.7532226669999993,
+    "relative_spread": 0.15033102128282355,
+    "samples_s": [
+      0.873806167,
+      0.835615083,
+      0.8021198749999998,
+      0.7811130419999999,
+      0.7532226669999993
+    ]
+  },
+  "warmup_discarded": 1
+}

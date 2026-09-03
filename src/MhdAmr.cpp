@@ -210,6 +210,7 @@ void MhdAmr::ClearLevel(int lev)
 // клеточные B — RT0-интерполяция граней (как в схеме Авдеевой–Лукина).
 void MhdAmr::InitLevelData(int lev)
 {
+    BL_PROFILE("MhdAmr::InitLevelData");
     const auto problo = Geom(lev).ProbLoArray();
     const auto dx     = Geom(lev).CellSizeArray();
     const Problem& P  = prob_;
@@ -353,6 +354,7 @@ void MhdAmr::RemakeLevel(int lev, Real time, const BoxArray& ba,
 // ---------------------------------------------------------------------------
 void MhdAmr::ErrorEst(int lev, TagBoxArray& tags, Real /*time*/, int /*ngrow*/)
 {
+    BL_PROFILE("MhdAmr::ErrorEst");
     const Real grho = cfg_.refine_grad_rho;
     const Real gcur = cfg_.refine_current;
     const auto dx   = Geom(lev).CellSizeArray();
@@ -386,6 +388,7 @@ void MhdAmr::ErrorEst(int lev, TagBoxArray& tags, Real /*time*/, int /*ngrow*/)
 // ---------------------------------------------------------------------------
 void MhdAmr::FillPatchCells(int lev, MultiFab& mf, Real time)
 {
+    BL_PROFILE("MhdAmr::FillPatchCells");
     PhysBCFunct<CpuBndryFuncFab> fbc(Geom(lev), bcrec_, CpuBndryFuncFab(ext_dir_fill));
     if (lev == 0) {
         amrex::FillPatchSingleLevel(mf, time, {&state_[0]}, {time}, 0, 0, NCONS,
@@ -403,6 +406,7 @@ void MhdAmr::FillPatchCells(int lev, MultiFab& mf, Real time)
 // FillPatch: граневые компоненты B (face_divfree_interp на стыке уровней)
 void MhdAmr::FillPatchFaces(int lev, Array<MultiFab*, AMREX_SPACEDIM> bf, Real time)
 {
+    BL_PROFILE("MhdAmr::FillPatchFaces");
     if (lev == 0) {
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
             if (bf[d] != &bface_[0][d]) {
@@ -486,6 +490,7 @@ void MhdAmr::FillPhysicalFaceBoundary(int lev)
 // на прямоугольной ячейке RT0-восстановление даёт среднее двух граней.
 void MhdAmr::SyncCellB(int lev)
 {
+    BL_PROFILE("MhdAmr::SyncCellB");
     for (MFIter mfi(state_[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
         const Box bx = mfi.growntilebox(NGROW - 1);
         auto u   = state_[lev].array(mfi);
@@ -503,6 +508,7 @@ void MhdAmr::SyncCellB(int lev)
 // ---------------------------------------------------------------------------
 void MhdAmr::ComputeFluxesAndEmf(int lev)
 {
+    BL_PROFILE("MhdAmr::ComputeFluxesAndEmf");
     const Limiter lim = cfg_.limiter;
     const EmfAveraging emode = cfg_.emf;
     const double gam = cfg_.gamma;
@@ -621,6 +627,7 @@ amrex::Long MhdAmr::CountNonPositiveCells() const
 // и div B = 0 сохраняется на всей иерархии (вывод — в REPORT.md).
 void MhdAmr::SyncEmfAcrossLevels()
 {
+    BL_PROFILE("MhdAmr::SyncEmfAcrossLevels");
     for (int lev = finest_level; lev >= 1; --lev) {
         const BoxArray cba = amrex::coarsen(emf_[lev].boxArray(), refRatio(lev-1));
         MultiFab cemf(cba, emf_[lev].DistributionMap(), 1, 0);
@@ -632,6 +639,7 @@ void MhdAmr::SyncEmfAcrossLevels()
 // ---------------------------------------------------------------------------
 void MhdAmr::ApplyUpdates(int lev, Real dt)
 {
+    BL_PROFILE("MhdAmr::ApplyUpdates");
     const auto dx = Geom(lev).CellSizeArray();
     const Real lx = dt / dx[0], ly = dt / dx[1];
 
@@ -679,6 +687,7 @@ void MhdAmr::ApplyUpdates(int lev, Real dt)
 // ---------------------------------------------------------------------------
 Real MhdAmr::ComputeDt() const
 {
+    BL_PROFILE("MhdAmr::ComputeDt");
     Real dt = std::numeric_limits<Real>::max();
     for (int lev = 0; lev <= finest_level; ++lev) {
         const auto dx = Geom(lev).CellSizeArray();
@@ -725,6 +734,7 @@ Real MhdAmr::MaxDivB(int lev) const
 // ---------------------------------------------------------------------------
 void MhdAmr::EulerStage(Real dt)
 {
+    BL_PROFILE("MhdAmr::EulerStage");
     for (int lev = 0; lev <= finest_level; ++lev) {
         MultiFab tmp(grids[lev], dmap[lev], NCONS, NGROW);
         FillPatchCells(lev, tmp, t_);
@@ -774,6 +784,7 @@ void MhdAmr::DefineFluxRegisters()
 
 void MhdAmr::AccumulateFluxRegisters(Real dt)
 {
+    BL_PROFILE("MhdAmr::AccumulateFluxRegisters");
     for (int lev = 1; lev <= finest_level; ++lev) flux_reg_[lev]->reset();
 
     for (int lev = 0; lev <= finest_level; ++lev) {
@@ -794,6 +805,7 @@ void MhdAmr::AccumulateFluxRegisters(Real dt)
 
 void MhdAmr::RefluxAll()
 {
+    BL_PROFILE("MhdAmr::RefluxAll");
     for (int lev = 1; lev <= finest_level; ++lev) {
         flux_reg_[lev]->Reflux(state_[lev-1], URHO, URHO, UENE - URHO + 1);  // ρ, ρv, e
         flux_reg_[lev]->Reflux(state_[lev-1], UBZ,  UBZ,  1);                // Bz
@@ -900,6 +912,7 @@ Real MhdAmr::TotalConserved(int comp) const
 
 void MhdAmr::AverageDownAll()
 {
+    BL_PROFILE("MhdAmr::AverageDownAll");
     for (int lev = finest_level; lev >= 1; --lev) {
         amrex::average_down(state_[lev], state_[lev-1], Geom(lev), Geom(lev-1),
                             0, NCONS, refRatio(lev-1));
@@ -945,6 +958,7 @@ void MhdAmr::AdvanceHierarchy(Real dt)
 // ---------------------------------------------------------------------------
 void MhdAmr::WritePlotFile(int step, Real time)
 {
+    BL_PROFILE("MhdAmr::WritePlotFile");
     const Vector<std::string> names
         {"rho", "u", "v", "w", "p", "Bx", "By", "Bz", "divB"};
     const int nout = names.size();
