@@ -19,6 +19,6 @@
 | LEG-002 | `legacy_corrected` physically admissible end-to-end | 5 карт доведены до конца (добавлен вращающийся цилиндр 128², манифест `benchmarks/raw/legacy_corrected/rotor_128/`); вихрь Орзага--Танга при N=128 не завершается, причина установлена (катастрофическое сокращение при β→0), см. `CROSS_SOLVER_COMPARISON.md` | **implemented (T05 CPU slice)** | T05 |
 | BW-001 | Brio--Wu extrema diagnosis | независимый эталон (KT, без решателя Римана), версионированная разметка фронтов, метрики L1/L2/Linf + TV excess + over/undershoot + положение и ширина фронта | **implemented (T06)**: `docs/BRIOWU_T06.md`, гейт `briowu.independent_reference` | T06 |
 | CMP-001 | legacy vs AMReX quality comparison | `scripts/compare_briowu_1d.py`, `benchmarks/summary/briowu_1d_comparison.json`, `docs/CROSS_SOLVER_BRIOWU_1D.md` (equal-spacing + equal-cost, provisional reference) | **partial (T08 Level A, Brio--Wu only)** | T08 |
-| PERF-001 | benchmark provenance and repeats | JSON manifests, raw timings, median/spread | diagnostic timings only; pinned campaign absent | T09 |
+| PERF-001 | benchmark provenance and repeats | `scripts/benchmark.py`: машинный манифест + git-commit, ≥1 прогрев и ≥5 повторов, медиана и MAD, compute-only отдельно от end-to-end; 14 регионов `BL_PROFILE`, пресет `profile` | **implemented (T09)**: `docs/T09_TIMING.md`; кампания с пиннингом требует кластера (D-005) | T09 |
 | GPU-001 | CUDA parity | CUDA CTest suite and profiles | absent | T12 |
 | RPT-001 | report claim evidence | [CLAIM_TO_EVIDENCE.md](CLAIM_TO_EVIDENCE.md) | planned | T01 |

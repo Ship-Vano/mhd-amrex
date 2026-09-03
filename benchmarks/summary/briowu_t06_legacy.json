@@ -52,7 +52,7 @@
     }
   ],
   "label": "legacy_corrected 1-D HLLD (1st order), N=400",
-  "reference": "/tmp/bw_kt_6400.csv",
+  "reference": "benchmarks/raw/report_inputs/bw_kt_6400.csv",
   "variables": {
     "By": {
       "first_difference_sign_changes": 2,

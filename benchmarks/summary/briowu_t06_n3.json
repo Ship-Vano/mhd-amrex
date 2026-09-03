@@ -1,5 +1,5 @@
 {
-  "candidate": "/private/tmp/claude-501/-Users-ivansamanov-Documents-mhd-amrex/a2efbec7-38bc-4a3a-9ca4-0dfe61489a7b/scratchpad/bw_n3_400.csv",
+  "candidate": "benchmarks/raw/report_inputs/bw_n3_400.csv",
   "cells": 400,
   "fronts": [
     {
@@ -52,7 +52,7 @@
     }
   ],
   "label": "AMReX N3 (MUSCL+SSPRK2+GS), N=400",
-  "reference": "/tmp/bw_kt_6400.csv",
+  "reference": "benchmarks/raw/report_inputs/bw_kt_6400.csv",
   "variables": {
     "By": {
       "first_difference_sign_changes": 26,

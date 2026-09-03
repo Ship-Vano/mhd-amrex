@@ -1,4 +1,4 @@
-# AMReX rotor N=128, t=0.15, x=y diagonal (48 bins); source out_rotor.csv
+# AMReX rotor N=128, t=0.15, x=y diagonal (48 bins); source benchmarks/raw/report_inputs/rotor_128.csv
 x rho p
 0.0104167 1 1
 0.03125 1 1

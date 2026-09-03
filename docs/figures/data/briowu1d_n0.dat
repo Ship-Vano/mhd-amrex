@@ -1,4 +1,4 @@
-# AMReX N0 (const+Euler+BS), Nx=400, t=0.1, CFL 0.1; source /tmp/bw_N0.csv
+# AMReX N0 (const+Euler+BS), Nx=400, t=0.1, CFL 0.1; source benchmarks/raw/report_inputs/bw_n0_400.csv
 x rho u By p
 0.00125 1 0 1 1
 0.00625 1 0 1 1

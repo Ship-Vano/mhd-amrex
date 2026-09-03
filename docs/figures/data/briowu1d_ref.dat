@@ -1,4 +1,4 @@
-# AMReX N3 N=2048 provisional reference, Nx=2048, t=0.1, CFL 0.1; source /tmp/bw_ref.csv
+# AMReX N3 N=2048 provisional reference, Nx=2048, t=0.1, CFL 0.1; source benchmarks/raw/report_inputs/bw_amrex_2048.csv
 x rho u By p
 0.000244141 1 0 1 1
 0.00268555 1 0 1 1

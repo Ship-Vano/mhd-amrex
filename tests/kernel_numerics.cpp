@@ -355,6 +355,39 @@ void test_corner_emf()
     // cell_emf_z = v*Bx - u*By.
     Real q[NPRIM] = {1.0, 0.3, -0.4, 0.0, 1.0, 0.5, 0.2, 0.0};
     close(cell_emf_z(q), q[QV] * q[QBX] - q[QU] * q[QBY], 1e-15, "cell_emf_z formula");
+
+    // --- одномерный предел (Gardiner & Stone 2005, §3.1) ---------------------
+    // Требование T04/NEW-006: при исчезающих поперечных градиентах угловая ЭДС
+    // обязана в точности сводиться к одномерному значению с грани.
+    //
+    // Течение зависит только от x. Тогда обе x-грани у узла несут одно и то же
+    // upwind-значение E*, а y-грани и ячейки слева/справа несут свои клеточные
+    // значения E_L и E_R (по y ничего не меняется, скачка через y-грань нет).
+    {
+        const Real e_star = 1.7, eL = 0.4, eR = -0.9;
+        const Real gs = corner_emf(e_star, e_star, eL, eR, eL, eR, eL, eR,
+                                   EmfAveraging::GardinerStone);
+        close(gs, e_star, 1e-15, "Gardiner-Stone reduces to the 1-D upwind EMF");
+
+        // Balsara-Spicer в том же пределе даёт 1/2 E* + 1/4 (E_L + E_R) и
+        // одномерное значение НЕ воспроизводит. Это не придирка, а причина, по
+        // которой схемой по умолчанию выбрана Gardiner-Stone; фиксируем факт,
+        // чтобы он не был потерян при рефакторинге.
+        const Real bs = corner_emf(e_star, e_star, eL, eR, eL, eR, eL, eR,
+                                   EmfAveraging::BalsaraSpicer);
+        close(bs, 0.5 * e_star + 0.25 * (eL + eR), 1e-15,
+              "Balsara-Spicer 1-D limit is the documented averaged value");
+        if (std::fabs(bs - e_star) < 1e-12) {
+            std::fprintf(stderr, "Balsara-Spicer unexpectedly reproduces the 1-D "
+                                 "upwind EMF; the test no longer distinguishes "
+                                 "the two schemes\n");
+            std::exit(1);
+        }
+        // Вырожденный случай E_L = E_R = E*: обе схемы обязаны совпасть.
+        close(corner_emf(e_star, e_star, e_star, e_star, e_star, e_star, e_star,
+                         e_star, EmfAveraging::BalsaraSpicer),
+              e_star, 1e-15, "Balsara-Spicer 1-D limit with no transverse jump");
+    }
 }
 
 // Одна стадия Эйлера для линейного оператора L(y) = lambda*y.

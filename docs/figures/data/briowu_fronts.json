@@ -2,7 +2,7 @@
   "schema": 1,
   "case": "brio_wu",
   "t": 0.1,
-  "reference": "/tmp/bw_kt_6400.csv",
+  "reference": "benchmarks/raw/report_inputs/bw_kt_6400.csv",
   "fronts": [
     {
       "variable": "rho",
@@ -34,5 +34,6 @@
       "x": 0.6428125,
       "jump": -0.13468137029999994
     }
-  ]
+  ],
+  "regenerate": "sh scripts/regen_report_data.sh"
 }

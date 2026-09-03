@@ -26,6 +26,13 @@ OUT = Path("docs/figures/data")
 
 
 def _write(name: str, header: str, cols: list[str], rows: list[tuple]):
+    # A figure that records "/tmp/..." as its origin records nothing: the file is
+    # gone by the time anyone tries to check it. Regenerate with
+    # scripts/regen_report_data.sh, which writes to a fixed repo-relative path.
+    for bad in ("/tmp/", "/private/tmp/", "scratchpad"):
+        if bad in header:
+            raise SystemExit(f"{name}: refusing to record an ephemeral source "
+                             f"path ({bad}) -- run scripts/regen_report_data.sh")
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / name).open("w") as f:
         f.write(f"# {header}\n")
@@ -121,7 +128,7 @@ def loop_eb(args):
 def alfven(args):
     rows = []
     for n in (16, 32, 64, 128):
-        p = Path(f"out_alfven_{n}.csv")
+        p = Path(f"benchmarks/raw/report_inputs/alfven_{n}.csv")
         # the L1 is printed by the driver, not in the CSV; recompute from CSV vs exact
         # simpler: read it from a stored value the caller passes, else recompute
         d = list(csv.DictReader(p.open()))
@@ -143,7 +150,7 @@ def alfven(args):
 
 
 def ot(args):
-    rows_all = [r for r in csv.DictReader(Path("out_ot.csv").open())
+    rows_all = [r for r in csv.DictReader(Path("benchmarks/raw/report_inputs/ot_128.csv").open())
                 if abs(float(r["y"]) - 0.3125) < 0.012]
     nb = 96
     b = [[] for _ in range(nb)]
@@ -156,7 +163,7 @@ def ot(args):
                          sum(v[0] for v in c) / len(c),
                          sum(v[1] for v in c) / len(c)))
     _write("ot_slice.dat",
-           "AMReX Orszag-Tang N=128, t=0.5, y=0.3125 slice (96 x-bins); source out_ot.csv",
+           "AMReX Orszag-Tang N=128, t=0.5, y=0.3125 slice (96 x-bins); source benchmarks/raw/report_inputs/ot_128.csv",
            ["x", "rho", "p"], rows)
 
 
@@ -176,9 +183,9 @@ def rotor(args):
                 for i, c in enumerate(b) if c]
 
     amrex = ((float(r["x"]), float(r["y"]), float(r["rho"]), float(r["p"]))
-             for r in csv.DictReader(Path("out_rotor.csv").open()))
+             for r in csv.DictReader(Path("benchmarks/raw/report_inputs/rotor_128.csv").open()))
     _write("rotor_diag_amrex.dat",
-           "AMReX rotor N=128, t=0.15, x=y diagonal (48 bins); source out_rotor.csv",
+           "AMReX rotor N=128, t=0.15, x=y diagonal (48 bins); source benchmarks/raw/report_inputs/rotor_128.csv",
            ["x", "rho", "p"], diag(amrex, None))
 
     if args.rotor_vtu and args.rotor_mesh:
@@ -201,15 +208,15 @@ def rotor(args):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--bw-n0", default="/tmp/bw_N0.csv")
-    ap.add_argument("--bw-n3", default="/tmp/bw_N3.csv")
-    ap.add_argument("--bw-ref", default="/tmp/bw_ref.csv")
+    ap.add_argument("--bw-n0", default="benchmarks/raw/report_inputs/bw_n0_400.csv")
+    ap.add_argument("--bw-n3", default="benchmarks/raw/report_inputs/bw_n3_400.csv")
+    ap.add_argument("--bw-ref", default="benchmarks/raw/report_inputs/bw_amrex_2048.csv")
     ap.add_argument("--rotor-vtu")
     ap.add_argument("--rotor-mesh")
     ap.add_argument("--dw-legacy", default="benchmarks/raw/legacy_corrected/riemann_1d_n400/dai_woodward_1d.csv")
-    ap.add_argument("--dw-n0", default="/tmp/dw_n0.csv")
-    ap.add_argument("--dw-n3", default="/tmp/dw_n3.csv")
-    ap.add_argument("--dw-ref", default="/tmp/dw_ref.csv")
+    ap.add_argument("--dw-n0", default="benchmarks/raw/report_inputs/dw_n0_400.csv")
+    ap.add_argument("--dw-n3", default="benchmarks/raw/report_inputs/dw_n3_400.csv")
+    ap.add_argument("--dw-ref", default="benchmarks/raw/report_inputs/dw_ref_2048.csv")
     ap.add_argument("--verify", default="./build/release/mhd2d_verify")
     ap.add_argument("--only", choices=("briowu", "dai_woodward", "loop_eb", "alfven", "ot", "rotor"))
     args = ap.parse_args()

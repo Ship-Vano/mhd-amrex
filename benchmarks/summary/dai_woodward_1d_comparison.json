@@ -137,6 +137,7 @@
       "points": 400
     }
   },
+  "provenance_note": "The per-run 'source' fields below name scratch files from the session that produced this summary; they no longer exist. The runs are regenerable: `./build/release/mhd2d_verify briowu1d <N> <limiter> <euler|rk2> <bs|gs> 0.1 <out.csv>` (Dai-Woodward: `dw1d ... 0.2`). Artifacts used by the report figures were moved to a stable path -- see scripts/regen_report_data.sh. This file is retained as the original measurement record and is NOT the provenance for any report figure.",
   "reference": {
     "kind": "provisional grid-converged AMReX N3 (MUSCL-MC + SSP-RK2 + Gardiner-Stone); not an independent exact Riemann solution",
     "points": 2048,

@@ -1,4 +1,4 @@
-# AMReX Dai-Woodward n0, Nx=400, t=0.2; source /tmp/dw_n0.csv
+# AMReX Dai-Woodward n0, Nx=400, t=0.2; source benchmarks/raw/report_inputs/dw_n0_400.csv
 x rho u By p
 -0.49875 1.08 1.2 1.01554 0.95
 -0.49375 1.08 1.2 1.01554 0.95

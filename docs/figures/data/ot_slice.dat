@@ -1,4 +1,4 @@
-# AMReX Orszag-Tang N=128, t=0.5, y=0.3125 slice (96 x-bins); source out_ot.csv
+# AMReX Orszag-Tang N=128, t=0.5, y=0.3125 slice (96 x-bins); source benchmarks/raw/report_inputs/ot_128.csv
 x rho p
 0.00520833 0.249804 0.204227
 0.015625 0.256549 0.211511

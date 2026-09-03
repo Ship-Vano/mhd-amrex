@@ -1,4 +1,4 @@
-# legacy_corrected rotor 128x128 structured, t=0.15, CFL 0.5, x=y diagonal; source /private/tmp/claude-501/-Users-ivansamanov-Documents-mhd-amrex/a2efbec7-38bc-4a3a-9ca4-0dfe61489a7b/scratchpad/legacy_rotor_final.vtu
+# legacy_corrected rotor 128x128 structured, t=0.15, CFL 0.5, x=y diagonal; source benchmarks/raw/legacy_corrected/rotor_128/final.vtu
 x rho p
 0.0104167 1 1
 0.03125 1 1

@@ -79,7 +79,7 @@ the floored / degenerate path, which `kernel.numerics` exercises deterministical
 
 - NUM-004: a CTest artifact carrying the normalized uniform-CT `div B` norm
   `dx·‖div B‖∞ / max(‖B‖∞, Bref)` (currently only printed).
-- Characteristic vs primitive limiting, corner-EMF 1-D consistency proof.
+- Characteristic vs primitive limiting. **Corner-EMF 1-D consistency: done** — `kernel.numerics` asserts that Gardiner-Stone reduces exactly to the 1-D upwind face EMF when transverse gradients vanish (to 1e-15), that Balsara-Spicer gives the documented `E*/2 + (E_L+E_R)/4` instead, and that the two agree when there is no transverse jump. That is the reason Gardiner-Stone is the default.
 - Gas reflux for AMR conservation (P0) — T07, not touched here.
 - Threading a per-cell floor *event* counter through `cons_to_prim` itself
   (current `CountNonPositiveCells` counts post-step cells at/below the floor,

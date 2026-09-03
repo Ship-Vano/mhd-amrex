@@ -1,4 +1,4 @@
-# AMReX Dai-Woodward ref, Nx=2048, t=0.2; source /tmp/dw_ref.csv
+# AMReX Dai-Woodward ref, Nx=2048, t=0.2; source benchmarks/raw/report_inputs/dw_ref_2048.csv
 x rho u By p
 -0.499756 1.08 1.2 1.01554 0.95
 -0.497314 1.08 1.2 1.01554 0.95
