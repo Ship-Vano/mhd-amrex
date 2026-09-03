@@ -589,6 +589,82 @@ $y=0.3125$. Источник: \code{docs/figures/data/ot\_slice.dat}.}
 \end{minipage}
 \end{figure}
 
+\begin{figure}[htbp]\centering
+\begin{minipage}{0.49\textwidth}\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.80\textwidth,axis equal image,enlargelimits=false,axis on top,
+  xlabel=$x$,ylabel=$y$,title={\footnotesize Орзага--Танга, $\rho$, $t=0.5$},
+  colormap/jet,colorbar,point meta min=0.0913,point meta max=0.4915,
+  colorbar style={width=0.16cm,tick label style={font=\tiny}}]
+\addplot graphics [xmin=0,xmax=1,ymin=0,ymax=1] {figures/maps/ot_rho.png};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.49\textwidth}\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.80\textwidth,axis equal image,enlargelimits=false,axis on top,
+  xlabel=$x$,ylabel=$y$,title={\footnotesize Орзага--Танга, $p$, $t=0.5$},
+  colormap/jet,colorbar,point meta min=0.0281,point meta max=0.5045,
+  colorbar style={width=0.16cm,tick label style={font=\tiny}}]
+\addplot graphics [xmin=0,xmax=1,ymin=0,ymax=1] {figures/maps/ot_p.png};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+
+\medskip
+\begin{minipage}{0.49\textwidth}\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.80\textwidth,axis equal image,enlargelimits=false,axis on top,
+  xlabel=$x$,ylabel=$y$,title={\footnotesize Цилиндр, $\rho$, $t=0.15$},
+  colormap/jet,colorbar,point meta min=0.5885,point meta max=11.554,
+  colorbar style={width=0.16cm,tick label style={font=\tiny}}]
+\addplot graphics [xmin=0,xmax=1,ymin=0,ymax=1] {figures/maps/rotor_rho.png};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.49\textwidth}\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.80\textwidth,axis equal image,enlargelimits=false,axis on top,
+  xlabel=$x$,ylabel=$y$,title={\footnotesize Цилиндр, $|\B|^2/2$, $t=0.15$},
+  colormap/jet,colorbar,point meta min=0.0549,point meta max=2.509,
+  colorbar style={width=0.16cm,tick label style={font=\tiny}}]
+\addplot graphics [xmin=0,xmax=1,ymin=0,ymax=1] {figures/maps/rotor_pmag.png};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+
+\medskip
+\begin{minipage}{0.49\textwidth}\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.72\textwidth,axis equal image,enlargelimits=false,axis on top,
+  xlabel=$x$,ylabel=$y$,title={\footnotesize Петля поля, $|\B_\perp|$, $t=2$},
+  colormap/jet,colorbar,point meta min=0,point meta max=0.001125,
+  colorbar style={width=0.16cm,tick label style={font=\tiny},
+    /pgf/number format/sci}]
+\addplot graphics [xmin=-1,xmax=1,ymin=-0.5,ymax=0.5] {figures/maps/loop_bmag.png};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.49\textwidth}\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.80\textwidth,axis equal image,enlargelimits=false,axis on top,
+  xlabel=$x$,ylabel=$y$,title={\footnotesize CP-альфвен, $B_z$, $t=1$},
+  colormap/jet,colorbar,point meta min=-0.0990,point meta max=0.0990,
+  colorbar style={width=0.16cm,tick label style={font=\tiny}}]
+\addplot graphics [xmin=0,xmax=1.1547,ymin=0,ymax=2] {figures/maps/alfven_bz.png};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\caption{Двумерные поля решателя \code{mhd2d\_amrex} (однородная сетка,
+MUSCL + SSP-RK2 + CT). Вихрь Орзага--Танга и вращающийся цилиндр --- $128^2$;
+петля поля --- $128\times64$; циркулярно-поляризованная альфвеновская волна ---
+$64\times111$. Цветовая шкала --- \code{jet}, диапазоны указаны на шкалах и
+совпадают с приведёнными в тексте. Источник: \code{scripts/field\_map.py} по
+CSV-дампам \code{mhd2d\_verify}.}
+\label{fig:maps}
+\end{figure}
+
+
 \subsection{Порядок сходимости интегратора и схемы}
 \label{sec:res-conv}
 
