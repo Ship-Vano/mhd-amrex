@@ -137,6 +137,11 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/invalid_unknown_key.json)
   add_test(NAME solver.compute_only
            COMMAND mhd2d ${CMAKE_CURRENT_SOURCE_DIR}/tests/config/valid_minimal.json)
+  # ADR 0001 (гейт TDG0): слой ядер не должен структурно зависеть от AMReX.
+  add_test(NAME arch.kernel_purity
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_kernel_purity.py
+                   --kernel-dir ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels)
+
   # Обязательная матрица канонических задач (PROGRAM_PLAN). Диапазоны rho и p --
   # литературные цветовые шкалы, поэтому тест ловит не только падение, но и
   # смещение фронта или потерю признака.

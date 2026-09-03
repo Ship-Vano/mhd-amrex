@@ -3,29 +3,114 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
   "configurePresets": [
     {
-      "name": "release",
-      "displayName": "CPU Release (MPI + OpenMP)",
+      "name": "base",
+      "hidden": true,
       "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/opt/homebrew/opt/gcc/bin/gcc-15",
+        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/gcc/bin/g++-15",
+        "MHD_HDF5": "OFF",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "CPU Release (MPI + OpenMP)",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_COMPILER": "/opt/homebrew/opt/gcc/bin/gcc-15",
-        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/gcc/bin/g++-15",
+        "MHD_MPI": "ON",
+        "MHD_OPENMP": "ON"
+      }
+    },
+    {
+      "name": "cpu-release",
+      "inherits": "base",
+      "displayName": "CPU Release, serial (no MPI, no OpenMP)",
+      "binaryDir": "${sourceDir}/build/cpu-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MHD_MPI": "OFF",
+        "MHD_OPENMP": "OFF"
+      }
+    },
+    {
+      "name": "cpu-debug",
+      "inherits": "base",
+      "displayName": "CPU Debug, serial (assertions on)",
+      "binaryDir": "${sourceDir}/build/cpu-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MHD_MPI": "OFF",
+        "MHD_OPENMP": "OFF",
+        "AMReX_ASSERTIONS": "ON",
+        "AMReX_BOUND_CHECK": "ON"
+      }
+    },
+    {
+      "name": "mpi-release",
+      "inherits": "base",
+      "displayName": "MPI Release (no OpenMP) — rank-decomposition runs",
+      "binaryDir": "${sourceDir}/build/mpi-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MHD_MPI": "ON",
+        "MHD_OPENMP": "OFF"
+      }
+    },
+    {
+      "name": "profile",
+      "inherits": "base",
+      "displayName": "Release + AMReX TinyProfiler (timing campaigns, T09)",
+      "binaryDir": "${sourceDir}/build/profile",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
         "MHD_MPI": "ON",
         "MHD_OPENMP": "ON",
-        "MHD_HDF5": "OFF",
-        "BUILD_TESTING": "ON"
+        "AMReX_TINY_PROFILE": "ON"
+      }
+    },
+    {
+      "name": "hdf5-release",
+      "inherits": "base",
+      "displayName": "CPU Release with HDF5 plotfiles",
+      "binaryDir": "${sourceDir}/build/hdf5-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MHD_MPI": "ON",
+        "MHD_OPENMP": "ON",
+        "MHD_HDF5": "ON"
+      }
+    },
+    {
+      "name": "cuda-release",
+      "inherits": "base",
+      "displayName": "CUDA Release — NOT buildable on this workstation (no NVIDIA GPU)",
+      "binaryDir": "${sourceDir}/build/cuda-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "MHD_MPI": "ON",
+        "MHD_OPENMP": "OFF",
+        "AMReX_GPU_BACKEND": "CUDA"
       }
     }
   ],
   "buildPresets": [
-    { "name": "release", "configurePreset": "release", "jobs": 4 }
+    { "name": "release",      "configurePreset": "release",      "jobs": 8 },
+    { "name": "cpu-release",  "configurePreset": "cpu-release",  "jobs": 8 },
+    { "name": "cpu-debug",    "configurePreset": "cpu-debug",    "jobs": 8 },
+    { "name": "mpi-release",  "configurePreset": "mpi-release",  "jobs": 8 },
+    { "name": "profile",      "configurePreset": "profile",      "jobs": 8 },
+    { "name": "hdf5-release", "configurePreset": "hdf5-release", "jobs": 8 }
   ],
   "testPresets": [
-    {
-      "name": "release",
-      "configurePreset": "release",
-      "output": { "outputOnFailure": true }
-    }
+    { "name": "release",     "configurePreset": "release",     "output": { "outputOnFailure": true } },
+    { "name": "cpu-release", "configurePreset": "cpu-release", "output": { "outputOnFailure": true } },
+    { "name": "cpu-debug",   "configurePreset": "cpu-debug",   "output": { "outputOnFailure": true } },
+    { "name": "mpi-release", "configurePreset": "mpi-release", "output": { "outputOnFailure": true } },
+    { "name": "profile",     "configurePreset": "profile",     "output": { "outputOnFailure": true } }
   ]
 }
