@@ -204,7 +204,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mesh", type=Path, required=True)
     parser.add_argument("--vtu", type=Path, required=True)
-    parser.add_argument("--case", choices=("brio_wu", "cp_alfven", "magnetic_loop"), required=True)
+    # rotor and orszag_tang use only the case-independent diagnostics
+    # (extrema, mass/momentum/energy integrals, magnetic energy): both are
+    # compared against literature colour-scale ranges rather than an
+    # analytic return state, so no case-specific error metric applies.
+    parser.add_argument("--case",
+                        choices=("brio_wu", "cp_alfven", "magnetic_loop",
+                                 "rotor", "orszag_tang"),
+                        required=True)
     parser.add_argument("--gamma", type=float, required=True)
     parser.add_argument("--reference-vtu", type=Path,
                         help="same-mesh reference state for a return-error diagnostic")

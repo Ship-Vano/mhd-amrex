@@ -81,6 +81,35 @@ CASES: dict[str, dict[str, Any]] = {
         "field_loop_radius": 0.3,
         "field_loop_amplitude": 1.0e-3,
     },
+    # Вращающийся цилиндр (Tóth) и вихрь Орзага-Танга. До этого обе карты не
+    # имели воспроизводимого раннера: CFL и finalTime были зашиты в исходник,
+    # поэтому конфиг игнорировался. Обе теперь управляются манифестом.
+    "rotor": {
+        "task_type": 4,
+        "final_time": 0.15,
+        "gamma": 1.4,
+        "domain": (0.0, 1.0, 0.0, 1.0),
+        "maxh": 0.01,
+        "structured_resolution": (128, 128),
+        "grading": 0.3,
+        "boundary_jitter": 0.0,
+        "cfl": 0.5,
+        "diagnostic_case": "rotor",
+        "profile_projection": False,
+    },
+    "orszag_tang": {
+        "task_type": 5,
+        "final_time": 0.5,
+        "gamma": 5.0 / 3.0,
+        "domain": (0.0, 1.0, 0.0, 1.0),
+        "maxh": 0.01,
+        "structured_resolution": (128, 128),
+        "grading": 0.3,
+        "boundary_jitter": 0.0,
+        "cfl": 0.5,
+        "diagnostic_case": "orszag_tang",
+        "profile_projection": False,
+    },
     "magnetic_loop_legacy_scaled": {
         "task_type": 9,
         "final_time": 2.0,
@@ -257,8 +286,12 @@ def main() -> int:
         raise SystemExit(f"overlay patch is missing: {overlay}")
     if args.mesh_backend == "netgen" and not args.netgen_python.is_file():
         raise SystemExit(f"Netgen Python interpreter is missing: {args.netgen_python}")
-    if not Path(args.compiler).is_file():
+    # Accept both an absolute path and a bare command name resolved on PATH;
+    # the resolved path is what gets recorded in the manifest.
+    resolved_compiler = args.compiler if Path(args.compiler).is_file() else shutil.which(args.compiler)
+    if not resolved_compiler or not Path(resolved_compiler).is_file():
         raise SystemExit(f"C++ compiler is missing: {args.compiler}")
+    args.compiler = resolved_compiler
     head = command_text(["git", "-C", str(source), "rev-parse", "HEAD"])
     if head != OFFICIAL_COMMIT:
         raise SystemExit(f"source HEAD {head} is not official {OFFICIAL_COMMIT}")
