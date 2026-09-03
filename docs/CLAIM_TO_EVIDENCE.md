@@ -31,7 +31,7 @@ material claims. A claim absent from this table is not a verified result.
 | C-013 | Исторический `legacy_vkr` расходится (отрицательные ρ,p) на Brio–Wu / CP-Alfvén / петле поля | verified | `docs/LEGACY_VKR_T03.md`; `scripts/run_legacy_vkr.py` quality gate |
 | C-014 | `hlld_flux` имеет положительность-сохраняющий откат на HLL со счётчиком; на канонических тестах = 0 | implemented + verified | `src/kernels/Hlld.H`; `kernel.numerics::test_positivity_fallback`; `hlld_fallbacks` в диагностике всех прогонов |
 | C-015 | Набор модульных/регрессионных тестов ядра AMReX | verified | `tests/kernel_numerics.cpp` (`kernel.numerics`); conversions, fast_speed, HLLD consistency/branches/degeneracies, 20k finiteness sweep, limiter, corner EMF |
-| C-016 | Наблюдаемый порядок циркулярной альфвеновской волны ≥ 1.8 (измерено 1.94) | measured | `standalone.alfven_order`; `docs/figures/data/alfven_conv.dat` |
+| C-016 | Наблюдаемый порядок циркулярной альфвеновской волны ≥ 1.8 (N=64→128: 1.94 по относительной L1 B⊥; 1.92 по L1(sum4) — норма, которую проверяет гейт) | measured | `standalone.alfven_order`; `docs/figures/data/alfven_conv.dat` |
 | C-017 | SSP-RK2 — второй порядок (полином усиления `1+a+a²/2`, порядок ОДУ 2.004) | verified | `kernel.numerics::test_ssprk2_order` |
 | C-018 | AMReX ОТ/rotor совпадают с Авдеевой–Лукиным / ВКР по диапазонам (~2%); срез ОТ `y=0.3125` совпадает по признакам | measured (qualitative) | `docs/LITERATURE_VALIDATION.md`; `benchmarks/summary/rotor_slice_comparison.json`; `docs/figures/data/{ot_slice,rotor_diag_*}.dat` |
 | C-019 | `legacy_corrected` петля поля: рост `divB` совпадает с ВКР §4.1.4 (до множителя ~2) | measured | `docs/LITERATURE_VALIDATION.md`; 1.4e-17→4.8e-16 vs 5.9e-17→2.0e-15 |

@@ -109,17 +109,28 @@ Data: `docs/figures/data/rotor_diag_*.dat`,
 | solver | N | ρ range | p range | scaled `max|divB|` | completes? |
 |---|---:|---|---|---:|:--:|
 | mhd-amrex (standalone) | 128 | [0.091, 0.492] | [0.028, 0.505] | 5e-13 | yes |
-| legacy_corrected (structured, CFL 0.2) | 128 | — | — | — | **no** — positivity guard at `t≈0.4314` |
-| legacy_corrected (structured, CFL 0.2) | 256 | *running* (~1.3·10⁵ triangles) | | | *pending* |
+| legacy_corrected (structured, CFL 0.5) | 128 | — | — | init 1.0e-17 | **no** — positivity guard at `t=0.43120`, it. 1729 |
 | VKR Fig. 23–26 | ≈400 (Netgen) | ~[0.09, 0.48] | ~[0.028, 0.49] | — | yes |
 | Avdeeva–Lukin Fig. 7 / 25 | 800 | [0.087, 0.489] | [0.028, 0.49] | roundoff | yes |
 
 `mhd-amrex` matches the literature colour-scale ranges to ~2 % and reproduces
 the `y=0.3125` pressure slice feature-by-feature (dip at x≈0.30 to ≈0.07, peak
 at x≈0.58 to ≈0.26, valley x≈0.73–0.92 to ≈0.04); no parasitic oscillation.
-`legacy_corrected` first order under-resolves an OT low-β region on a coarse
-structured mesh — a matched-resolution legacy OT comparison needs N ≈ 400
-(a long run on the current structured backend). Data: `docs/figures/data/ot_slice.dat`.
+`legacy_corrected` fails on OT at N=128, and the cause is now pinned rather than
+assumed. The saved failure state (`physical_failure.json`, cell centre
+(0.354, 0.044)) is ρ=0.36651, ½ρ|v|²=1.68e-3, ½|B|²=0.26035, e=0.26196, so the
+thermal energy is the difference of near-equal numbers,
+e − ½ρ|v|² − ½|B|² = −7.0e-5 — just 0.03 % of the total. The cell is magnetically
+dominated (β→0) and the first-order truncation error in `e` exceeds the thermal
+term itself: catastrophic cancellation in p=(γ−1)(e−½ρ|v|²−½|B|²).
+
+It is **not** an initial-data defect: the initial magnetic-flux residual is
+1.0e-17, and rewriting the OT initialisation to take `B_n` from vector-potential
+differences (so it is divergence-free on *any* triangulation, not only where the
+midpoint rule happens to telescope) left the failure point unchanged at
+`t=0.43120`. A matched-resolution legacy OT comparison therefore needs N ≈ 400,
+a second-order scheme, or a dual-energy formulation.
+Data: `docs/figures/data/ot_slice.dat`.
 
 ## 5. Magnetic field loop
 
