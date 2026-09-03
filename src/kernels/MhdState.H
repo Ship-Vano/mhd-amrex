@@ -67,9 +67,17 @@ MHD_HD Real pressure_from_cons(const Real* u, Real gamma)
     return (gamma - Real(1.0)) * (u[UENE] - ke - me);
 }
 
-MHD_HD void cons_to_prim(const Real* u, Real* q, Real gamma, const Limits& lim = Limits{})
+// n_floor (если передан) увеличивается на 1, когда состояние пришлось поджать
+// полом по rho или по p. Это НЕ то же самое, что счётчик откатов HLLD->HLL и не
+// то же, что число ячеек, оказавшихся на полу после шага: пол здесь
+// срабатывает в момент самого преобразования, в том числе на промежуточных
+// (реконструированных) состояниях, которые нигде не сохраняются. Требование
+// NEW-003: у полов и откатов должны быть раздельные счётчики.
+MHD_HD void cons_to_prim(const Real* u, Real* q, Real gamma, const Limits& lim = Limits{},
+                         int* n_floor = nullptr)
 {
-    const Real rho = (u[URHO] > lim.small_rho) ? u[URHO] : lim.small_rho;
+    const bool rho_floored = !(u[URHO] > lim.small_rho);
+    const Real rho = rho_floored ? lim.small_rho : u[URHO];
     q[QRHO] = rho;
     q[QU]   = u[UMX] / rho;
     q[QV]   = u[UMY] / rho;
@@ -78,7 +86,9 @@ MHD_HD void cons_to_prim(const Real* u, Real* q, Real gamma, const Limits& lim =
     q[QBY]  = u[UBY];
     q[QBZ]  = u[UBZ];
     Real p  = pressure_from_cons(u, gamma);
-    q[QP]   = (p > lim.small_pres) ? p : lim.small_pres;
+    const bool p_floored = !(p > lim.small_pres);
+    q[QP]   = p_floored ? lim.small_pres : p;
+    if (n_floor && (rho_floored || p_floored)) *n_floor += 1;
 }
 
 MHD_HD void prim_to_cons(const Real* q, Real* u, Real gamma)

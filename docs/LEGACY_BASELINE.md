@@ -15,6 +15,18 @@
 - отслеживается 57 файлов;
 - SHA-256 основного файла `MHDSolver2D.cpp` в commit:
   `3bb46d30cf24a4a93d54e4f30bc319a1a7dd006acabcf7dd701eac0f83b6c078`.
+- **immutable-тег (LEG-001)**: `legacy_vkr/9d0f60e` — аннотированный тег в
+  `/Users/ivansamanov/Documents/MHD2D`, указывающий на
+  `9d0f60ea8576fac5d6f28c4dec142236d76131d6`. Тег добавляет только ref: дерево
+  исходников не изменяется ни на одном этапе работы.
+- контрольная сумма архива снимка:
+  ```
+  git -C <MHD2D> archive --format=tar 9d0f60ea8576fac5d6f28c4dec142236d76131d6 | shasum -a 256
+  afb51261d3d3b36760573afa4a12e7567d49bcfdc3b15c504ec9604df15ff440
+  ```
+  `scripts/run_legacy_corrected.py` сверяет HEAD источника с этим commit и
+  отказывается работать при расхождении или грязном дереве, а сам архив и его
+  сумма кладутся в манифест каждого прогона (`official_source.tar`).
 - внешний архив исходников, конфигов, mesher и результатов инвентаризирован в
   [`docs/EXTERNAL_DATA_MANIFEST.md`](EXTERNAL_DATA_MANIFEST.md).
 

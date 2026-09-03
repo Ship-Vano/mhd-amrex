@@ -467,11 +467,13 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
     const double gam = cfg_.gamma;
 
     amrex::Long level_fallbacks = 0;
+    amrex::Long level_floors = 0;
 #ifdef AMREX_USE_OMP
-#pragma omp parallel reduction(+:level_fallbacks)
+#pragma omp parallel reduction(+:level_fallbacks) reduction(+:level_floors)
 #endif
     for (MFIter mfi(state_[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
         int fb = 0;   // срабатывания HLLD→HLL на данном тайле (LoopOnCpu — серийный)
+        int fl = 0;   // срабатывания пола ρ/p при переводе в примитивы (NEW-003)
         auto u   = state_[lev].const_array(mfi);
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
@@ -480,10 +482,10 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
         auto ez  = emf_[lev].array(mfi);
 
         // примитивы в ячейке (i,j) по запросу
-        auto qprim = [=] (int i, int j, double* q) {
+        auto qprim = [=, &fl] (int i, int j, double* q) {
             double uc[NCONS];
             for (int n = 0; n < NCONS; ++n) uc[n] = u(i, j, 0, n);
-            cons_to_prim(uc, q, gam);
+            cons_to_prim(uc, q, gam, Limits{}, &fl);
         };
 
         // --- x-потоки: грани валидной области + 1 слой (нужно узловым ЭДС) --
@@ -541,8 +543,10 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
             });
         }
         level_fallbacks += fb;
+        level_floors += fl;
     }
     hlld_fallbacks_ += level_fallbacks;
+    floor_events_   += level_floors;
 }
 
 // Число ячеек с ρ ≤ small_rho либо p ≤ small_pres на всей иерархии (после
@@ -943,11 +947,14 @@ void MhdAmr::Evolve()
                 divb = std::max(divb, MaxDivB(lev));   // MaxDivB уже делает ReduceRealMax
             amrex::Long fb = hlld_fallbacks_;
             ParallelDescriptor::ReduceLongSum(fb);
+            amrex::Long fe = floor_events_;
+            ParallelDescriptor::ReduceLongSum(fe);
             const amrex::Long nonpos = CountNonPositiveCells();
             amrex::Print() << "step " << step_ << "  t=" << t_
                            << "  dt=" << dt << "  max|divB|=" << divb
                            << "  levels=" << finest_level + 1
                            << "  hlld_fallbacks=" << fb
+                           << "  floor_events=" << fe
                            << "  nonpositive_cells=" << nonpos << "\n";
         }
         const bool plot_now =
@@ -962,8 +969,11 @@ void MhdAmr::Evolve()
     if (cfg_.write_plotfiles && last_plot_step != step_) WritePlotFile(step_, t_);
     amrex::Long fb_total = hlld_fallbacks_;
     ParallelDescriptor::ReduceLongSum(fb_total);
+    amrex::Long floor_total = floor_events_;
+    ParallelDescriptor::ReduceLongSum(floor_total);
     amrex::Print() << "Evolve finished: " << step_ << " steps, t=" << t_
                    << ", hlld_fallbacks=" << fb_total
+                   << ", floor_events=" << floor_total
                    << ", nonpositive_cells=" << CountNonPositiveCells() << "\n";
 
     // Диагностика консервативности иерархии. На полностью периодической задаче

@@ -44,6 +44,10 @@ def main() -> int:
                     help="relative slack on the rho/p band")
     ap.add_argument("--max-divb", type=float, default=1.0e-12)
     ap.add_argument("--max-fallbacks", type=int, default=0)
+    ap.add_argument("--max-floors", type=int, default=0,
+                    help="NEW-003: rho/p floor events inside cons_to_prim, counted "
+                         "separately from HLLD fallbacks and from post-step "
+                         "nonpositive cells")
     ap.add_argument("--exact-constant", action="store_true")
     args = ap.parse_args()
 
@@ -58,6 +62,7 @@ def main() -> int:
         return 1
 
     fallbacks = int(parse(r"hlld_fallbacks=(\d+)", run.stdout, "hlld_fallbacks"))
+    floors = int(parse(r"floor_events=(\d+)", run.stdout, "floor_events"))
     nonpos = int(parse(r"nonpositive_cells=(\d+)", run.stdout, "nonpositive_cells"))
     divb = parse(r"normalized=([0-9.eE+-]+)", run.stdout, "divb")
     rho_lo = parse(r"rho_min=([0-9.eE+-]+)", run.stdout, "rho_min")
@@ -70,6 +75,8 @@ def main() -> int:
         failures.append(f"{nonpos} cells at or below the rho/p floor")
     if fallbacks > args.max_fallbacks:
         failures.append(f"{fallbacks} HLLD->HLL fallbacks exceeds {args.max_fallbacks}")
+    if floors > args.max_floors:
+        failures.append(f"{floors} rho/p floor events exceeds {args.max_floors}")
     if not (divb <= args.max_divb):
         failures.append(f"normalized div B {divb:.3e} exceeds {args.max_divb:.3e}")
     if not (rho_lo > 0.0 and p_lo > 0.0):
@@ -98,7 +105,7 @@ def main() -> int:
         return 1
 
     print(f"OK  rho [{rho_lo:.6g}, {rho_hi:.6g}]  p [{p_lo:.6g}, {p_hi:.6g}]  "
-          f"divB(norm)={divb:.3e}  fallbacks={fallbacks}")
+          f"divB(norm)={divb:.3e}  fallbacks={fallbacks}  floors={floors}")
     return 0
 
 

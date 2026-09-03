@@ -170,7 +170,7 @@ if(BUILD_TESTING)
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/mhd_blast.json
                    --rho-min 0.1526 --rho-max 2.506
                    --p-min 0.0785 --p-max 0.9409 --tol 0.08
-                   --max-fallbacks 200)
+                   --max-fallbacks 200 --max-floors 500)
 
   # Гейт T07: согласование газовых потоков на стыке уровней. Тест сам проверяет,
   # что стык уровней вообще существует и что при reflux=false дефект появляется.
