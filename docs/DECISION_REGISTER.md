@@ -12,6 +12,7 @@
 | D-005 | Кластер | нет доступа и параметров | owner: scheduler, account, partition, limits, node/GPU specs | T13 |
 | D-006 | Формат НИРС | шаблон не предоставлен | owner: template/format rules, если обязательны | final T14 formatting |
 | D-007 | AMR conservation | **решено (2026-09-03)**: gas flux reflux реализован; что сохранять при regrid — измерено, выбран вариант «полная энергия» | — | T07 |
+| D-009 | Учёт энергии при RT0-реконструкции в `legacy_corrected` | измеряется в этой сессии: `conservative` (E не трогаем, разницу поглощает `p`) против `preserve_internal` (E сдвигается на изменение магнитной энергии, `p` сохраняется) | — | T05 |
 | D-008 | GPU status | host-only loops | internal: complete CUDA work package and parity | T12 |
 
 ## Зафиксированные решения

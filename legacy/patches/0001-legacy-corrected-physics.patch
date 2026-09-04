@@ -289,7 +289,7 @@ index 89d951f..47585f8 100644
  
  bool HLLCScheme(const MHDProblem1D &problem, const std::string &filename ="HLLCScheme");
 diff --git a/src/MHDsolver/MHDSolver2D.cpp b/src/MHDsolver/MHDSolver2D.cpp
-index 0a2ee03..9358772 100644
+index 0a2ee03..cf511fb 100644
 --- a/src/MHDsolver/MHDSolver2D.cpp
 +++ b/src/MHDsolver/MHDSolver2D.cpp
 @@ -4,6 +4,10 @@
@@ -887,7 +887,7 @@ index 0a2ee03..9358772 100644
          }
      }
  }
-@@ -780,6 +924,112 @@ void MHDSolver2D::runSolver() {
+@@ -780,6 +924,137 @@ void MHDSolver2D::runSolver() {
      bNs = initBns;
      ghostElemUs = initGhostElemUs;
      ghostBNs = initGhostBNs;
@@ -970,6 +970,8 @@ index 0a2ee03..9358772 100644
 +        }
 +        throw std::runtime_error(message.str());
 +    };
++    long pressureFloorEvents = 0;
++    double pressureFloorEnergyAdded = 0.0;
 +    const auto ensure_admissible_states = [&](const char* stage, const int iteration, const double time,
 +                                               const bool requirePositivePressure) {
 +        for (int element = 0; element < innerElemCount; ++element) {
@@ -982,6 +984,29 @@ index 0a2ee03..9358772 100644
 +            }
 +            const double gasPressure = pressure(state, gam_hcr);
 +            if (requirePositivePressure && (!std::isfinite(gasPressure) || !(gasPressure > 0.0))) {
++                // Пол по давлению вместо безусловного отказа. Первопорядковая
++                // схема в области малого beta теряет знак внутренней энергии
++                // из-за катастрофического сокращения при p = (g-1)(e-kin-mag);
++                // отказ здесь не диагностирует расчёт, а просто прекращает его.
++                // Поднимаем p до пола, восстанавливая e, и СЧИТАЕМ событие:
++                // ненулевой счётчик -- часть результата, а не скрытая правка.
++                if (pressureFloor > 0.0 && std::isfinite(state[0]) && state[0] > 0.0) {
++                    std::vector<double>& mutableState = elemUs[element];
++                    const double rho = mutableState[0];
++                    const double kinetic = 0.5 * (mutableState[1] * mutableState[1] +
++                                                  mutableState[2] * mutableState[2] +
++                                                  mutableState[3] * mutableState[3]) / rho;
++                    const double magnetic = 0.5 * (mutableState[5] * mutableState[5] +
++                                                   mutableState[6] * mutableState[6] +
++                                                   mutableState[7] * mutableState[7]);
++                    const double energyBefore = mutableState[4];
++                    mutableState[4] = pressureFloor / (gam_hcr - 1.0) + kinetic + magnetic;
++                    ++pressureFloorEvents;
++                    pressureFloorEnergyAdded +=
++                        elPool.elements[element].area *
++                        (mutableState[4] - energyBefore);
++                    continue;
++                }
 +                fail_physical_state(stage, iteration, time, element, gasPressure, state);
 +            }
 +        }
@@ -1000,7 +1025,7 @@ index 0a2ee03..9358772 100644
  
      // сделать старые дубликаты состояний (предыдущие состояния) чтобы в новые записывать расчёты
      std::vector<std::vector<double>> elemUs_prev(initElemUs.size(), std::vector<double>(8, 0.0));
-@@ -798,29 +1048,46 @@ void MHDSolver2D::runSolver() {
+@@ -798,29 +1073,46 @@ void MHDSolver2D::runSolver() {
          }
      }
  
@@ -1056,7 +1081,7 @@ index 0a2ee03..9358772 100644
  
          currentTime += tau;
  
-@@ -846,54 +1113,33 @@ void MHDSolver2D::runSolver() {
+@@ -846,54 +1138,33 @@ void MHDSolver2D::runSolver() {
          // инициализируем вектор потоков через рёбра // MHD (HLLD) fluxes (from one element to another "<| -> |>")
          std::vector<std::vector<double>> fluxes(edgePool.edges.size(), std::vector<double>(8, 0.0));
          std::vector<std::vector<double>> unrotated_fluxes(edgePool.edges.size(), std::vector<double>(8, 0.0));
@@ -1136,7 +1161,7 @@ index 0a2ee03..9358772 100644
              }
          }
          // по явной схеме обновляем газовые величины
-@@ -904,295 +1150,146 @@ void MHDSolver2D::runSolver() {
+@@ -904,295 +1175,160 @@ void MHDSolver2D::runSolver() {
              if(elem.edgeIndexes.size() != 3){
                  std::cout << "Bad edge vector size != 3" << std::endl;
              }
@@ -1516,12 +1541,24 @@ index 0a2ee03..9358772 100644
 +            const double newMagneticEnergy =
 +                0.5 * (elemUs[i][5] * elemUs[i][5] + elemUs[i][6] * elemUs[i][6] +
 +                       elemUs[i][7] * elemUs[i][7]);
-+            // E was already updated by the conservative MHD face flux.
-+            // Do not overwrite that update to preserve p: a CT-induced
-+            // change of reconstructed magnetic energy is a numerical
-+            // magnetic/internal-energy exchange and must remain visible
-+            // in p while the periodic total-energy balance stays closed.
++            // Что делать с изменением магнитной энергии, внесённым RT0-
++            // реконструкцией, -- это выбор, а не данность, и оба варианта
++            // измеримы (см. docs/DECISION_REGISTER.md, D-009):
++            //
++            //   conservative       -- E не трогаем. Полная энергия строго
++            //     следует потоковому балансу, но разницу целиком поглощает
++            //     внутренняя энергия. В магнитно доминированной ячейке
++            //     (beta -> 0) накопление этих обменов уводит p в минус.
++            //
++            //   preserve_internal  -- E сдвигается на изменение магнитной
++            //     энергии. Реконструкция -- это смена представления поля, а
++            //     не нагрев газа, поэтому p она менять не должна; полная
++            //     энергия при этом меняется ровно на уже логируемую величину
++            //     ctMagneticEnergyChangeSigned.
 +            const double magneticEnergyChange = newMagneticEnergy - oldMagneticEnergy;
++            if (ctEnergyMode == CtEnergyMode::PreserveInternal) {
++                elemUs[i][4] += magneticEnergyChange;
++            }
 +            ctMagneticEnergyChangeSigned += elem.area * magneticEnergyChange;
 +            ctMagneticEnergyChangeL1 += elem.area * std::abs(magneticEnergyChange);
 +        }
@@ -1536,6 +1573,8 @@ index 0a2ee03..9358772 100644
 -    std::cout << "Final divergence = " << divergence << std::endl;
 +    std::cout << std::setprecision(17) << "Final time = " << currentTime
 +              << "; iterations = " << iterations << std::endl;
++    std::cout << "Pressure floor events = " << pressureFloorEvents
++              << "; energy added by floor = " << pressureFloorEnergyAdded << std::endl;
 +    const DivergenceMetrics finalDivergence = computeDivergenceMetrics(divergenceReferenceField);
 +    const std::vector<double> finalConserved = integrated_conserved();
 +    std::cout << "Final max|magnetic flux residual| = " << finalDivergence.maxFlux
@@ -1556,7 +1595,7 @@ index 0a2ee03..9358772 100644
  }
  
  
-@@ -1290,37 +1387,150 @@ void MHDSolver2D::writeVTU(const std::string& filename, const bool& ghost) {
+@@ -1290,37 +1426,150 @@ void MHDSolver2D::writeVTU(const std::string& filename, const bool& ghost) {
      file.close();
  }
  
@@ -1575,17 +1614,6 @@ index 0a2ee03..9358772 100644
 +        throw std::runtime_error("CT edge tangent and normal are not an oriented orthonormal pair");
 +    }
 +    return orientation > 0.0 ? 1.0 : -1.0;
-+}
-+
-+double advanceFaceNormalBFromCt(const Edge& edge, const NodePool& nodePool,
-+                                const double previousNormalB, const double dt,
-+                                const double firstNodeG, const double secondNodeG) {
-+    if (!std::isfinite(previousNormalB) || !(dt >= 0.0) || !std::isfinite(dt) ||
-+        !std::isfinite(firstNodeG) || !std::isfinite(secondNodeG)) {
-+        throw std::runtime_error("CT Faraday update received a non-finite value");
-+    }
-+    return previousNormalB + edgeCtOrientation(edge, nodePool) * dt / edge.length *
-+           (secondNodeG - firstNodeG);
 +}
  
 -double MHDSolver2D::computeDivergence() {
@@ -1609,6 +1637,17 @@ index 0a2ee03..9358772 100644
 -                divergence += edge.length * bNs[edgeInd];
 -            } else {
 -                divergence -= edge.length * bNs[edgeInd];
++double advanceFaceNormalBFromCt(const Edge& edge, const NodePool& nodePool,
++                                const double previousNormalB, const double dt,
++                                const double firstNodeG, const double secondNodeG) {
++    if (!std::isfinite(previousNormalB) || !(dt >= 0.0) || !std::isfinite(dt) ||
++        !std::isfinite(firstNodeG) || !std::isfinite(secondNodeG)) {
++        throw std::runtime_error("CT Faraday update received a non-finite value");
++    }
++    return previousNormalB + edgeCtOrientation(edge, nodePool) * dt / edge.length *
++           (secondNodeG - firstNodeG);
++}
++
 +Vec2 reconstructCellMagneticFieldRT0(const Element& element,
 +                                     const NodePool& nodePool,
 +                                     const EdgePool& edgePool,
@@ -1732,13 +1771,13 @@ index 0a2ee03..9358772 100644
  }
  
  std::vector<int> findCommonElements(const std::vector<int>& v1, const std::vector<int>& v2) {
-@@ -2553,4 +2763,3 @@ void MHDSolver2D::runGPUSolver() {
+@@ -2553,4 +2802,3 @@ void MHDSolver2D::runGPUSolver() {
      divergence = computeDivergence();
      std::cout << "Final divergence = " << divergence << std::endl;
  }
 -
 diff --git a/src/MHDsolver/MHDSolver2D.h b/src/MHDsolver/MHDSolver2D.h
-index 136f3b9..07da2bd 100644
+index 136f3b9..d7bcec1 100644
 --- a/src/MHDsolver/MHDSolver2D.h
 +++ b/src/MHDsolver/MHDSolver2D.h
 @@ -16,6 +16,15 @@
@@ -1757,11 +1796,16 @@ index 136f3b9..07da2bd 100644
  
  class MHDSolver2D {
  public:
-@@ -29,6 +38,11 @@ public:
+@@ -29,6 +38,16 @@ public:
      double tau = 0.0001; // шаг по времени
      double min_tau = 1e-7; // минимальный шаг по времени
      double cflNum = 0.4; // число Куранта
 +    double configuredCfl = -1.0; // negative preserves a task default
++    // Учёт энергии при RT0-реконструкции клеточного B (решение D-009).
++    enum class CtEnergyMode { Conservative, PreserveInternal };
++    CtEnergyMode ctEnergyMode = CtEnergyMode::PreserveInternal;
++    // Пол по давлению: 0 отключает (тогда неположительное p -- отказ).
++    double pressureFloor = 0.0;
 +    double fieldLoopU = 2.0;
 +    double fieldLoopV = 1.0;
 +    double fieldLoopRadius = 0.3;
@@ -1769,7 +1813,7 @@ index 136f3b9..07da2bd 100644
      int MAX_ITERATIONS = 1000000; // максимальное число итераций
      int iterationsPerFrame = 10; // число итераций для записи в файл
      int task_type = 1; // тип задачи
-@@ -58,6 +72,10 @@ public:
+@@ -58,6 +77,10 @@ public:
      double tau_from_cfl2D(const double& sigma, const double& hx, const std::vector<std::vector<double>>& states, const double& gam_hcr);
      double tau_from_cfl2D(const double& sigma, const double& min_h, std::vector<std::vector<double>>& edgeStates, const double& gam_hcr,
                            const EdgePool& ep);
@@ -1780,7 +1824,7 @@ index 136f3b9..07da2bd 100644
      void setInitElemUs();
      void runSolver();
  
-@@ -68,6 +86,7 @@ public:
+@@ -68,6 +91,7 @@ public:
      void applyZeroRConditions(const ElementPool& elPool, const EdgePool& edgePool, const NodePool& nodePool, const std::vector<std::vector<double>>& elemUs_prev);
  
      double computeDivergence();
@@ -1788,7 +1832,7 @@ index 136f3b9..07da2bd 100644
      void checkNan(bool& foundNan);
  
      // Начальное состояние системы
-@@ -91,11 +110,27 @@ public:
+@@ -91,11 +115,27 @@ public:
  //void writeVTU(const std::string& filename, const World& geometryWorld, const std::vector<std::vector<double>>& elemUs);
  
  double computeDivergence(const std::vector<std::vector<double>>& elemUs, const EdgePool& edgePool);
@@ -1819,7 +1863,7 @@ index 136f3b9..07da2bd 100644
  
  //void solverHLL2D(const World& world);
 diff --git a/src/MHDsolver/solver.cpp b/src/MHDsolver/solver.cpp
-index 8ad39d4..137391a 100644
+index 8ad39d4..9c10323 100644
 --- a/src/MHDsolver/solver.cpp
 +++ b/src/MHDsolver/solver.cpp
 @@ -5,7 +5,21 @@
@@ -1844,11 +1888,13 @@ index 8ad39d4..137391a 100644
      std::cout << "running solver..." << std::endl;
      omp_set_num_threads(1);
      //TODO: move it to the global config file
-@@ -34,6 +48,11 @@ int main(){
+@@ -34,6 +48,13 @@ int main(){
      bool debugDivergence = json_root.get("debugDivergence", false).asBool();
      bool ghostOutput = json_root.get("ghostOutput", false).asBool();
      int iterationsPerFrame = json_root.get("iterationsPerFrame", 10).asInt();
 +    double configuredCfl = json_root.get("cfl", -1.0).asDouble();
++    const std::string ctMode = json_root.get("ctEnergyMode", "preserve_internal").asString();
++    const double pressureFloor = json_root.get("pressureFloor", 0.0).asDouble();
 +    double fieldLoopU = json_root.get("fieldLoopU", 2.0).asDouble();
 +    double fieldLoopV = json_root.get("fieldLoopV", 1.0).asDouble();
 +    double fieldLoopRadius = json_root.get("fieldLoopRadius", 0.3).asDouble();
@@ -1856,11 +1902,21 @@ index 8ad39d4..137391a 100644
      // world.display();
      //std::cin.get();
      omp_set_num_threads(omp_get_max_threads());
-@@ -42,34 +61,33 @@ int main(){
+@@ -42,34 +63,43 @@ int main(){
      solver.finalTime = finalTime;
      solver.debugDivergence = debugDivergence;
      solver.iterationsPerFrame = iterationsPerFrame;
 +    solver.configuredCfl = configuredCfl;
++    if (ctMode == "preserve_internal") {
++        solver.ctEnergyMode = MHDSolver2D::CtEnergyMode::PreserveInternal;
++    } else if (ctMode == "conservative") {
++        solver.ctEnergyMode = MHDSolver2D::CtEnergyMode::Conservative;
++    } else {
++        std::cerr << "legacy_corrected: unknown ctEnergyMode '" << ctMode
++                  << "' (expected conservative | preserve_internal)" << std::endl;
++        return 2;
++    }
++    solver.pressureFloor = pressureFloor;
 +    solver.fieldLoopU = fieldLoopU;
 +    solver.fieldLoopV = fieldLoopV;
 +    solver.fieldLoopRadius = fieldLoopRadius;
@@ -1910,7 +1966,7 @@ index 8ad39d4..137391a 100644
      }
      else{
          solver.runSolver();
-@@ -81,4 +99,4 @@ int main(){
+@@ -81,4 +111,4 @@ int main(){
      solver.writeVTU(exportFileName, ghostOutput);
  
      return 0;

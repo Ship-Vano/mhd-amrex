@@ -212,6 +212,13 @@ def parse_solver_log(text: str) -> dict[str, Any]:
     if fallback:
         result["hlld_to_hlle_fallbacks"] = int(fallback.group(1))
         result["cfl_candidate_range"] = [float(fallback.group(2)), float(fallback.group(3))]
+    floor = re.search(
+        r"Pressure floor events = (\d+); energy added by floor = ([^\s]+)", text)
+    if floor:
+        # Ненулевое число -- часть результата, а не скрытая правка: пол
+        # означает, что схема в этих ячейках потеряла знак внутренней энергии.
+        result["pressure_floor_events"] = int(floor.group(1))
+        result["pressure_floor_energy_added"] = float(floor.group(2))
     correction = re.search(
         r"CT reconstruction magnetic-energy change: signed = ([^;]+); L1 = ([^\s]+)", text
     )
@@ -397,6 +404,12 @@ def main() -> int:
         "fieldLoopAmplitude": case.get("field_loop_amplitude", 1.0e-3),
         "cylindrical": False,
         "gpu": False,
+        # D-009: реконструкция RT0 меняет представление поля, а не греет газ,
+        # поэтому по умолчанию сохраняется внутренняя энергия. Пол по давлению
+        # держим включённым как страховку -- его срабатывания попадают в лог и
+        # в манифест, то есть остаются частью результата.
+        "ctEnergyMode": case.get("ct_energy_mode", "preserve_internal"),
+        "pressureFloor": case.get("pressure_floor", 1.0e-10),
         "exportFileName": "OutputData/final.vtu",
     }
     config_path = input_dir / "solverConfig.json"
