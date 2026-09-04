@@ -109,15 +109,15 @@ Data: `docs/figures/data/rotor_diag_*.dat`,
 | solver | N | ρ range | p range | scaled `max|divB|` | completes? |
 |---|---:|---|---|---:|:--:|
 | mhd-amrex (standalone) | 128 | [0.091, 0.492] | [0.028, 0.505] | 5e-13 | yes |
-| legacy_corrected (structured, CFL 0.5) | 128 | — | — | init 1.0e-17 | **no** — positivity guard at `t=0.43120`, it. 1729 |
+| legacy_corrected (structured, CFL 0.5) | 128 | [0.0953, 0.4018] | [0.0417, 0.4454] | 5.7e-17 | **yes** (after D-009) |
 | VKR Fig. 23–26 | ≈400 (Netgen) | ~[0.09, 0.48] | ~[0.028, 0.49] | — | yes |
 | Avdeeva–Lukin Fig. 7 / 25 | 800 | [0.087, 0.489] | [0.028, 0.49] | roundoff | yes |
 
 `mhd-amrex` matches the literature colour-scale ranges to ~2 % and reproduces
 the `y=0.3125` pressure slice feature-by-feature (dip at x≈0.30 to ≈0.07, peak
 at x≈0.58 to ≈0.26, valley x≈0.73–0.92 to ≈0.04); no parasitic oscillation.
-`legacy_corrected` fails on OT at N=128, and the cause is now pinned rather than
-assumed. The saved failure state (`physical_failure.json`, cell centre
+`legacy_corrected` now completes OT at N=128. The cause of the earlier failure
+was pinned first and then removed. The saved failure state (`physical_failure.json`, cell centre
 (0.354, 0.044)) is ρ=0.36651, ½ρ|v|²=1.68e-3, ½|B|²=0.26035, e=0.26196, so the
 thermal energy is the difference of near-equal numbers,
 e − ½ρ|v|² − ½|B|² = −7.0e-5 — just 0.03 % of the total. The cell is magnetically
@@ -126,10 +126,28 @@ term itself: catastrophic cancellation in p=(γ−1)(e−½ρ|v|²−½|B|²).
 
 It is **not** an initial-data defect: the initial magnetic-flux residual is
 1.0e-17, and rewriting the OT initialisation to take `B_n` from vector-potential
-differences (so it is divergence-free on *any* triangulation, not only where the
-midpoint rule happens to telescope) left the failure point unchanged at
-`t=0.43120`. A matched-resolution legacy OT comparison therefore needs N ≈ 400,
-a second-order scheme, or a dual-energy formulation.
+differences left the failure point unchanged at `t=0.43120`.
+
+The source is the RT0 step. Every iteration the cell-centred `B` is rebuilt from
+the CT-owned face field, changing the cell magnetic energy; `E` was deliberately
+left untouched so that the total-energy balance stayed closed, which means the
+internal energy absorbs each of those exchanges. In a β→0 cell the accumulation
+drives it negative. Treating the reconstruction as what it is — a change of field
+representation, not heating — and shifting `E` by the magnetic-energy change
+(`ctEnergyMode: preserve_internal`, decision D-009) removes the failure at its
+source:
+
+| mode | iterations | pressure-floor events |
+|---|---:|---:|
+| `conservative` (previous) + floor | 2017 | 14300 |
+| `preserve_internal` (now default) | 2012 | **0** |
+
+The resulting extrema, ρ [0.0953, 0.4018] and p [0.0417, 0.4454] against
+Avdeeva–Lukin's [0.087, 0.489] / [0.028, 0.490] at N=800, are the literature
+solution narrowed by first-order diffusion at a third of the reference
+resolution; the structure (central diamond, symmetric density lobes, diagonal
+fronts) is reproduced. Closing the remaining gap is a resolution question, not a
+correctness one.
 Data: `docs/figures/data/ot_slice.dat`.
 
 ## 5. Magnetic field loop
