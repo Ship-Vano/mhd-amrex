@@ -7,7 +7,7 @@
 |---|---|---|---|---|
 | D-001 | Официальный historical legacy commit | кандидат `9d0f60e…`, не подтверждён владельцем | owner: подтверждение commit/tag | T03 |
 | D-002 | Provenance legacy Brio--Wu result | отсутствует config/run manifest | owner: exact input/config либо разрешение на новый run | T03, T05, T08 |
-| D-003 | Brio--Wu reference branch | не выбрана | owner: regular или compound/non-regular reference и источник | T06 |
+| D-003 | Brio--Wu reference branch | **решено**: составная (compound / non-regular); подтверждено независимой схемой в T06 | — | T06 |
 | D-004 | Публикация Бисикало--Жилкина | не идентифицирована | owner: название, DOI или PDF | report literature |
 | D-005 | Кластер | нет доступа и параметров | owner: scheduler, account, partition, limits, node/GPU specs | T13 |
 | D-006 | Формат НИРС | шаблон не предоставлен | owner: template/format rules, если обязательны | final T14 formatting |
