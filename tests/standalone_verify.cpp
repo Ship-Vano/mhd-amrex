@@ -172,6 +172,25 @@ struct Workspace {
 // На гладких канонических тестах обязан оставаться нулём (gate T04).
 static int g_hlld_fallbacks = 0;
 
+// Набор переменных, по которому ведётся MUSCL-реконструкция (РП1). Рабочий
+// вариант — примитивные: они непосредственно входят в решатель Римана, и
+// ограничитель работает с величинами, монотонность которых и требуется. Вариант
+// «консервативные» реализован как проверка гипотезы о происхождении перелёта по
+// скорости: если выброс порождается тем, что ограничиваются u и p, а не ρu и e,
+// то смена набора переменных обязана его сдвинуть. Результат измерения — в
+// docs/RP1_MONOTONICITY.md.
+enum class ReconVars { Primitive, Conservative };
+
+static ReconVars parse_recon_vars(const std::string& s)
+{
+    return (s == "cons") ? ReconVars::Conservative : ReconVars::Primitive;
+}
+
+// Реконструированное состояние оказалось непригодным (ρ<=0 или p<=0) и грань
+// пришлось считать по первому порядку. Диагностика: у примитивной
+// реконструкции этого не бывает по построению, у консервативной — бывает.
+static int g_recon_fallbacks = 0;
+
 static Real max_signal_dt(Grid& g, Real gamma, Real cfl)
 {
     Real dt = 1.0e30;
@@ -189,8 +208,56 @@ static Real max_signal_dt(Grid& g, Real gamma, Real cfl)
     return cfl * dt;
 }
 
+// Реконструкция по консервативным переменным: ограничиваются ρ, ρv, e, B, а на
+// грань выдаются примитивы. Восстановленное состояние может оказаться
+// непригодным (например, e упало ниже кинетической энергии) -- тогда грань
+// считается по первому порядку и это фиксируется счётчиком.
+static void reconstruct_cons_face(const Real* um, const Real* u0, const Real* up,
+                                  Limiter lim, Real gamma, bool plus_side, Real* q)
+{
+    Real uf[NCONS];
+    for (int n = 0; n < NCONS; ++n)
+        uf[n] = plus_side ? face_value_plus (um[n], u0[n], up[n], lim)
+                          : face_value_minus(um[n], u0[n], up[n], lim);
+    if (uf[URHO] > Real(0.0) && pressure_from_cons(uf, gamma) > Real(0.0)) {
+        cons_to_prim(uf, q, gamma);
+    } else {
+        cons_to_prim(u0, q, gamma);       // откат к первому порядку на этой грани
+        ++g_recon_fallbacks;
+    }
+}
+
+static void reconstruct_cons_x(Grid& g, int i, int j, Limiter lim, Real gamma,
+                               Real* qL, Real* qR)
+{
+    Real um[NCONS], u0[NCONS], up[NCONS];
+    for (int n = 0; n < NCONS; ++n) {
+        um[n] = g.u(i-2, j, n); u0[n] = g.u(i-1, j, n); up[n] = g.u(i, j, n);
+    }
+    reconstruct_cons_face(um, u0, up, lim, gamma, true, qL);
+    for (int n = 0; n < NCONS; ++n) {
+        um[n] = g.u(i-1, j, n); u0[n] = g.u(i, j, n); up[n] = g.u(i+1, j, n);
+    }
+    reconstruct_cons_face(um, u0, up, lim, gamma, false, qR);
+}
+
+static void reconstruct_cons_y(Grid& g, int i, int j, Limiter lim, Real gamma,
+                               Real* qL, Real* qR)
+{
+    Real um[NCONS], u0[NCONS], up[NCONS];
+    for (int n = 0; n < NCONS; ++n) {
+        um[n] = g.u(i, j-2, n); u0[n] = g.u(i, j-1, n); up[n] = g.u(i, j, n);
+    }
+    reconstruct_cons_face(um, u0, up, lim, gamma, true, qL);
+    for (int n = 0; n < NCONS; ++n) {
+        um[n] = g.u(i, j-1, n); u0[n] = g.u(i, j, n); up[n] = g.u(i, j+1, n);
+    }
+    reconstruct_cons_face(um, u0, up, lim, gamma, false, qR);
+}
+
 static void euler_stage(Grid& g, Workspace& w, Real dt, Real gamma,
-                        Limiter lim, EmfAveraging emf_mode)
+                        Limiter lim, EmfAveraging emf_mode,
+                        ReconVars rvars = ReconVars::Primitive)
 {
     const int ng = g.ng, nx = g.nx, ny = g.ny;
     const int sxc = g.sxc, sxf = g.sxf;
@@ -219,9 +286,13 @@ static void euler_stage(Grid& g, Workspace& w, Real dt, Real gamma,
     for (int j = -1; j <= ny; ++j) {
         for (int i = 0; i <= nx; ++i) {
             Real qL[NPRIM], qR[NPRIM];
-            for (int n = 0; n < NPRIM; ++n) {
-                qL[n] = face_value_plus (q_at(i-2, j)[n], q_at(i-1, j)[n], q_at(i, j)[n], lim);
-                qR[n] = face_value_minus(q_at(i-1, j)[n], q_at(i, j)[n], q_at(i+1, j)[n], lim);
+            if (rvars == ReconVars::Primitive) {
+                for (int n = 0; n < NPRIM; ++n) {
+                    qL[n] = face_value_plus (q_at(i-2, j)[n], q_at(i-1, j)[n], q_at(i, j)[n], lim);
+                    qR[n] = face_value_minus(q_at(i-1, j)[n], q_at(i, j)[n], q_at(i+1, j)[n], lim);
+                }
+            } else {
+                reconstruct_cons_x(g, i, j, lim, gamma, qL, qR);
             }
             Real f[NCONS];
             hlld_flux(qL, qR, g.fx(i, j), f, gamma, Limits{}, &g_hlld_fallbacks);
@@ -236,9 +307,13 @@ static void euler_stage(Grid& g, Workspace& w, Real dt, Real gamma,
     for (int j = 0; j <= ny; ++j) {
         for (int i = -1; i <= nx; ++i) {
             Real qL[NPRIM], qR[NPRIM], rL[NPRIM], rR[NPRIM];
-            for (int n = 0; n < NPRIM; ++n) {
-                qL[n] = face_value_plus (q_at(i, j-2)[n], q_at(i, j-1)[n], q_at(i, j)[n], lim);
-                qR[n] = face_value_minus(q_at(i, j-1)[n], q_at(i, j)[n], q_at(i, j+1)[n], lim);
+            if (rvars == ReconVars::Primitive) {
+                for (int n = 0; n < NPRIM; ++n) {
+                    qL[n] = face_value_plus (q_at(i, j-2)[n], q_at(i, j-1)[n], q_at(i, j)[n], lim);
+                    qR[n] = face_value_minus(q_at(i, j-1)[n], q_at(i, j)[n], q_at(i, j+1)[n], lim);
+                }
+            } else {
+                reconstruct_cons_y(g, i, j, lim, gamma, qL, qR);
             }
             // Поворот в локальные оси грани: u'=v, v'=−u, Bx'=By, By'=−Bx
             auto rot = [](const Real* q, Real* r) {
@@ -295,18 +370,61 @@ static void euler_stage(Grid& g, Workspace& w, Real dt, Real gamma,
     sync_cell_B(g);
 }
 
-// SSP-RK2 (метод Хойна): U¹ = U + dt·L(U);  Uⁿ⁺¹ = ½(Uⁿ + U¹ + dt·L(U¹)).
+// SSP-RK2 (метод Хойна) = TVD RK2 Шу–Ошера [Shu & Osher 1988]:
+//   U¹ = Uⁿ + dt·L(Uⁿ);   Uⁿ⁺¹ = ½Uⁿ + ½(U¹ + dt·L(U¹)).
+// Обе стадии — выпуклые комбинации шагов Эйлера с положительными весами,
+// поэтому TVD-свойство шага Эйлера переносится на весь интегратор.
 // Каждая стадия — CT-обновление, выпуклая комбинация бездивергентных полей
 // бездивергентна, поэтому div B = 0 сохраняется точно.
 static void rk2_step(Grid& g, Workspace& w, Real dt, Real gamma,
-                     Limiter lim, EmfAveraging emf_mode)
+                     Limiter lim, EmfAveraging emf_mode, ReconVars rv)
 {
     g.U0 = g.U; g.bx0 = g.bx; g.by0 = g.by;
-    euler_stage(g, w, dt, gamma, lim, emf_mode);
-    euler_stage(g, w, dt, gamma, lim, emf_mode);
+    euler_stage(g, w, dt, gamma, lim, emf_mode, rv);
+    euler_stage(g, w, dt, gamma, lim, emf_mode, rv);
     for (size_t k = 0; k < g.U.size();  ++k) g.U[k]  = 0.5 * (g.U0[k]  + g.U[k]);
     for (size_t k = 0; k < g.bx.size(); ++k) g.bx[k] = 0.5 * (g.bx0[k] + g.bx[k]);
     for (size_t k = 0; k < g.by.size(); ++k) g.by[k] = 0.5 * (g.by0[k] + g.by[k]);
+    sync_cell_B(g);
+}
+
+// НЕ-SSP RK2 (метод средней точки): U¹ = Uⁿ + ½dt·L(Uⁿ); Uⁿ⁺¹ = Uⁿ + dt·L(U¹).
+// Тот же второй порядок и та же цена, что у Хойна, но вторая стадия входит с
+// коэффициентом, который НЕ представим как выпуклая комбинация шагов Эйлера:
+// SSP-константа равна нулю, и TVD-оценка на шаг Эйлера ничего не даёт для шага
+// целиком. Реализован для контраста с rk2_step (см. РП2 / docs/RP2_INTEGRATOR.md);
+// рабочим режимом не является.
+static void rk2_midpoint_step(Grid& g, Workspace& w, Real dt, Real gamma,
+                              Limiter lim, EmfAveraging emf_mode, ReconVars rv)
+{
+    g.U0 = g.U; g.bx0 = g.bx; g.by0 = g.by;
+    euler_stage(g, w, 0.5 * dt, gamma, lim, emf_mode, rv);        // U = U¹
+    std::vector<Real> U1 = g.U, bx1 = g.bx, by1 = g.by;
+    euler_stage(g, w, dt, gamma, lim, emf_mode, rv);              // U = U¹ + dt·L(U¹)
+    for (size_t k = 0; k < g.U.size();  ++k) g.U[k]  = g.U0[k]  + (g.U[k]  - U1[k]);
+    for (size_t k = 0; k < g.bx.size(); ++k) g.bx[k] = g.bx0[k] + (g.bx[k] - bx1[k]);
+    for (size_t k = 0; k < g.by.size(); ++k) g.by[k] = g.by0[k] + (g.by[k] - by1[k]);
+    sync_cell_B(g);
+}
+
+// TVD RK3 Шу–Ошера: три стадии, все веса положительны, SSP-константа 1.
+//   U¹ = Uⁿ + dt·L(Uⁿ)
+//   U² = ¾Uⁿ + ¼(U¹ + dt·L(U¹))
+//   Uⁿ⁺¹ = ⅓Uⁿ + ⅔(U² + dt·L(U²))
+static void rk3_step(Grid& g, Workspace& w, Real dt, Real gamma,
+                     Limiter lim, EmfAveraging emf_mode, ReconVars rv)
+{
+    g.U0 = g.U; g.bx0 = g.bx; g.by0 = g.by;
+    auto blend = [&](Real a) {          // U <- a·Uⁿ + (1−a)·U
+        for (size_t k = 0; k < g.U.size();  ++k) g.U[k]  = a*g.U0[k]  + (1.0-a)*g.U[k];
+        for (size_t k = 0; k < g.bx.size(); ++k) g.bx[k] = a*g.bx0[k] + (1.0-a)*g.bx[k];
+        for (size_t k = 0; k < g.by.size(); ++k) g.by[k] = a*g.by0[k] + (1.0-a)*g.by[k];
+    };
+    euler_stage(g, w, dt, gamma, lim, emf_mode, rv);
+    euler_stage(g, w, dt, gamma, lim, emf_mode, rv);
+    blend(0.75);
+    euler_stage(g, w, dt, gamma, lim, emf_mode, rv);
+    blend(1.0/3.0);
     sync_cell_B(g);
 }
 
@@ -349,26 +467,42 @@ static void init_from_prim(Grid& g, Real gamma,
         }
 }
 
-enum class TimeInt { Euler, RK2 };
+// Явные интеграторы. RK2 (Хойн) — рабочий; Midpoint — не-SSP контроль для РП2;
+// RK3 — TVD RK3 Шу–Ошера.
+enum class TimeInt { Euler, RK2, Midpoint, RK3 };
+
+static TimeInt parse_time_int(const std::string& s)
+{
+    if (s == "euler")    return TimeInt::Euler;
+    if (s == "midpoint") return TimeInt::Midpoint;
+    if (s == "rk3")      return TimeInt::RK3;
+    return TimeInt::RK2;
+}
 
 static void run(Grid& g, Real gamma, Real cfl, Real tmax,
                 Limiter lim, EmfAveraging emf, const char* tag,
-                TimeInt ti = TimeInt::RK2)
+                TimeInt ti = TimeInt::RK2,
+                ReconVars rv = ReconVars::Primitive)
 {
     Workspace w;
     Real t = 0.0; int step = 0; Real divmax_hist = 0.0;
     while (t < tmax) {
         Real dt = std::min(max_signal_dt(g, gamma, cfl), tmax - t);
-        if (ti == TimeInt::RK2) rk2_step(g, w, dt, gamma, lim, emf);
-        else                    euler_stage(g, w, dt, gamma, lim, emf);
+        switch (ti) {
+        case TimeInt::RK2:      rk2_step(g, w, dt, gamma, lim, emf, rv);          break;
+        case TimeInt::Midpoint: rk2_midpoint_step(g, w, dt, gamma, lim, emf, rv); break;
+        case TimeInt::RK3:      rk3_step(g, w, dt, gamma, lim, emf, rv);          break;
+        case TimeInt::Euler:    euler_stage(g, w, dt, gamma, lim, emf, rv);       break;
+        }
         t += dt; ++step;
         divmax_hist = std::max(divmax_hist, max_divB(g));
         if (step % 100 == 0)
             std::printf("[%s] step %5d  t=%.4f  dt=%.3e  max|divB|=%.3e\n",
                         tag, step, t, dt, max_divB(g));
     }
-    std::printf("[%s] DONE: %d steps, t=%.4f, max|divB| over run = %.3e, hlld_fallbacks=%d\n",
-                tag, step, t, divmax_hist, g_hlld_fallbacks);
+    std::printf("[%s] DONE: %d steps, t=%.4f, max|divB| over run = %.3e, "
+                "hlld_fallbacks=%d recon_fallbacks=%d\n",
+                tag, step, t, divmax_hist, g_hlld_fallbacks, g_recon_fallbacks);
 }
 
 // Полная магнитная энергия домена (для теста о петле поля).
@@ -427,7 +561,8 @@ int main(int argc, char** argv)
     else if (test == "briowu1d") {
         // Параметризованная Брио–Ву-полоса для ablation-сравнения со схемой
         // legacy (N0..N3 из ТЗ). Аргументы:
-        //   briowu1d <Nx> <none|minmod|mc|vanleer> <euler|rk2> <bs|gs> <cfl> [out.csv]
+        //   briowu1d <Nx> <none|minmod|mc|vanleer> <euler|rk2|midpoint|rk3> <bs|gs> <cfl>
+        //            [out.csv] [prim|cons]
         const Real gamma = 2.0;
         const int  Nx    = (argc > 2) ? std::atoi(argv[2]) : 400;
         const std::string slim = (argc > 3) ? argv[3] : "mc";
@@ -435,11 +570,12 @@ int main(int argc, char** argv)
         const std::string semf = (argc > 5) ? argv[5] : "gs";
         const Real cfl   = (argc > 6) ? std::atof(argv[6]) : 0.1;
         const std::string out = (argc > 7) ? argv[7] : "out_briowu1d.csv";
+        const ReconVars rvars = parse_recon_vars((argc > 8) ? argv[8] : "prim");
         Limiter lim = Limiter::MC;
         if      (slim == "none")    lim = Limiter::None;
         else if (slim == "minmod")  lim = Limiter::MinMod;
         else if (slim == "vanleer") lim = Limiter::VanLeer;
-        const TimeInt ti = (sti == "euler") ? TimeInt::Euler : TimeInt::RK2;
+        const TimeInt ti = parse_time_int(sti);
         const EmfAveraging emf = (semf == "bs") ? EmfAveraging::BalsaraSpicer
                                                 : EmfAveraging::GardinerStone;
         Grid g(Nx, 4, 0.0, 1.0, 0.0, 4.0 / Nx);   // 4 ячейки по y, dy = dx
@@ -453,7 +589,7 @@ int main(int argc, char** argv)
             },
             [](Real, Real){ return 0.75; },
             [](Real x, Real){ return (x < 0.5) ? 1.0 : -1.0; });
-        run(g, gamma, cfl, 0.1, lim, emf, "briowu1d", ti);
+        run(g, gamma, cfl, 0.1, lim, emf, "briowu1d", ti, rvars);
         dump_field(g, gamma, out.c_str());
     }
     else if (test == "ot") {
@@ -593,7 +729,8 @@ int main(int argc, char** argv)
         // Задача Даи–Вудварда (ВКРБ §2.1.2): одномерная задача Римана с двумя
         // быстрыми и двумя медленными МГД-разрывами, двумя вращательными и
         // контактным.  x∈[-0.5,0.5], γ=5/3, Bx=4/√(4π), t=0.2, замороженные ГУ.
-        //   dw1d <Nx> <none|minmod|mc|vanleer> <euler|rk2> <bs|gs> <cfl> [out.csv]
+        //   dw1d <Nx> <none|minmod|mc|vanleer> <euler|rk2|midpoint|rk3> <bs|gs> <cfl>
+        //        [out.csv] [prim|cons]
         const Real gamma = 5.0/3.0;
         const Real s4pi  = std::sqrt(4.0*M_PI);
         const int  Nx    = (argc > 2) ? std::atoi(argv[2]) : 400;
@@ -602,11 +739,12 @@ int main(int argc, char** argv)
         const std::string semf = (argc > 5) ? argv[5] : "gs";
         const Real cfl   = (argc > 6) ? std::atof(argv[6]) : 0.2;
         const std::string out = (argc > 7) ? argv[7] : "out_dw1d.csv";
+        const ReconVars rvars = parse_recon_vars((argc > 8) ? argv[8] : "prim");
         Limiter lim = Limiter::MC;
         if      (slim == "none")    lim = Limiter::None;
         else if (slim == "minmod")  lim = Limiter::MinMod;
         else if (slim == "vanleer") lim = Limiter::VanLeer;
-        const TimeInt ti = (sti == "euler") ? TimeInt::Euler : TimeInt::RK2;
+        const TimeInt ti = parse_time_int(sti);
         const EmfAveraging emf = (semf == "bs") ? EmfAveraging::BalsaraSpicer
                                                 : EmfAveraging::GardinerStone;
         Grid g(Nx, 4, -0.5, 0.5, 0.0, 1.0 / Nx * 4.0);   // dy = dx
@@ -621,7 +759,7 @@ int main(int argc, char** argv)
             },
             [s4pi](Real, Real){ return 4.0/s4pi; },
             [s4pi](Real x, Real){ return (x < 0.0) ? 3.6/s4pi : 4.0/s4pi; });
-        run(g, gamma, cfl, 0.2, lim, emf, "dw1d", ti);
+        run(g, gamma, cfl, 0.2, lim, emf, "dw1d", ti, rvars);
         Real rmin = 1e30, pmin = 1e30, bymax = -1e30;
         for (int i = 0; i < Nx; ++i) {
             Real uc[NCONS], q[NPRIM];
