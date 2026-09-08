@@ -1,0 +1,60 @@
+{
+  "caveat": "single workstation, no pinning, no exclusive access: diagnostic timing, not a scaling result",
+  "config": {
+    "cfl": 0.4,
+    "integrator": "rk2",
+    "max_level": 0,
+    "n_cell": [
+      128,
+      128
+    ],
+    "path": "inputs/mhd_blast.json",
+    "problem": "mhd_blast",
+    "reflux": true,
+    "t_max": 0.2
+  },
+  "derived": {
+    "base_cell_normalization_note": "uniform grid: this is the work-normalized cost",
+    "base_cells": 16384,
+    "ms_per_step": 9.207065004149378,
+    "us_per_base_cell_step": 0.5619546511321641
+  },
+  "kind": "compute_only",
+  "label": "\u041c\u0413\u0414-\u0432\u0437\u0440\u044b\u0432 128^2, \u043e\u0434\u043d\u043e\u0440\u043e\u0434\u043d\u0430\u044f",
+  "machine": {
+    "cpu_count": 10,
+    "executable": "build/release/mhd2d",
+    "executable_mtime": "2026-09-03T07:25:25Z",
+    "git_commit": "885e99484083dc4f543fc7bcd3c80e04735d689c",
+    "git_dirty": true,
+    "machine": "arm64",
+    "omp_num_threads": "1",
+    "platform": "macOS-15.7.9-arm64-arm-64bit",
+    "processor": "arm",
+    "python": "3.9.6"
+  },
+  "repeats": 5,
+  "run": {
+    "floor_events": 48,
+    "hlld_fallbacks": 16,
+    "nonpositive_cells": 0,
+    "steps": 241,
+    "t_end": 0.2
+  },
+  "schema_version": 1,
+  "timing": {
+    "mad_s": 0.00980920800000007,
+    "max_s": 2.246860541,
+    "median_s": 2.218902666,
+    "min_s": 2.209093458,
+    "relative_spread": 0.01702061274642694,
+    "samples_s": [
+      2.2122917079999995,
+      2.218902666,
+      2.209093458,
+      2.246860541,
+      2.2313368749999984
+    ]
+  },
+  "warmup_discarded": 1
+}

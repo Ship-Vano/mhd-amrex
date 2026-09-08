@@ -24,6 +24,7 @@ import platform
 import re
 import statistics
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -96,6 +97,11 @@ def main() -> int:
     ap.add_argument("--repeats", type=int, default=5)
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--output", type=Path)
+    ap.add_argument("--compute-only", action="store_true",
+                    help="принудительно выключить запись plotfile'ов: стоимость "
+                         "схемы и стоимость ввода-вывода нельзя складывать в "
+                         "одно число, а сравнивать мкс/(ячейка*шаг) между "
+                         "случаями с записью и без -- бессмысленно")
     args = ap.parse_args()
 
     if args.repeats < 5:
@@ -106,12 +112,20 @@ def main() -> int:
     config = json.loads(args.config.read_text())
     cells = config["geometry"]["n_cell"]
 
+    run_config = args.config
+    tmpdir = None
+    if args.compute_only and config.get("output", {}).get("write_plotfiles", True):
+        tmpdir = tempfile.mkdtemp(prefix="mhd-bench-")
+        config.setdefault("output", {})["write_plotfiles"] = False
+        run_config = Path(tmpdir) / args.config.name
+        run_config.write_text(json.dumps(config, indent=2) + "\n")
+
     for _ in range(args.warmup):
-        run_once(args.executable, args.config)      # discarded: cache/page warm-up
+        run_once(args.executable, run_config)       # discarded: cache/page warm-up
 
     samples, info = [], {}
     for _ in range(args.repeats):
-        wall, info = run_once(args.executable, args.config)
+        wall, info = run_once(args.executable, run_config)
         samples.append(wall)
 
     timing = summarize(samples)
@@ -124,6 +138,7 @@ def main() -> int:
             "write_plotfiles", True) else "end_to_end",
         "config": {
             "path": str(args.config),
+            "write_plotfiles_forced_off": bool(tmpdir),
             "problem": config.get("problem"),
             "n_cell": cells,
             "max_level": config.get("amr", {}).get("max_level", 0),
@@ -140,6 +155,7 @@ def main() -> int:
             # levels carry additional cells, so this is NOT a work-normalized
             # cost and must not be compared across different max_level values;
             # it is comparable between runs on the same hierarchy.
+            "ms_per_step": (timing["median_s"] * 1e3 / steps) if steps else None,
             "us_per_base_cell_step": (timing["median_s"] * 1e6 / (base_cells * steps))
                                      if steps else None,
             "base_cell_normalization_note":
@@ -162,6 +178,7 @@ def main() -> int:
     print(f"{args.label}: median {timing['median_s']:.4f} s  "
           f"MAD {timing['mad_s']:.4f} s  spread {timing['relative_spread']:.1%}  "
           f"steps={steps}  "
+          f"{record['derived']['ms_per_step']:.3f} ms/step  "
           f"{record['derived']['us_per_base_cell_step']:.4f} us/cell-step"
           if steps else f"{args.label}: median {timing['median_s']:.4f} s")
     return 0

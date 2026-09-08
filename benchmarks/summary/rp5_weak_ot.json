@@ -1,0 +1,142 @@
+{
+  "caveat": "single workstation, no pinning, no exclusive access; on a heterogeneous CPU speedup saturates once the performance cores are full -- diagnostic, not a cluster scaling result",
+  "config": "inputs/orszag_tang_uniform.json",
+  "launcher": "mpirun -np {p} --oversubscribe",
+  "mode": "weak",
+  "n_cell": [
+    128,
+    128
+  ],
+  "repeats": 5,
+  "rows": [
+    {
+      "cells_per_unit": 16384.0,
+      "n_cell": [
+        128,
+        128
+      ],
+      "p": 1,
+      "ranges": [
+        0.1642674118,
+        0.4869292925,
+        0.08084465213,
+        0.4960705054
+      ],
+      "result_identical_to_serial": null,
+      "steps": 50,
+      "timing": {
+        "mad_s": 0.0015032910000001287,
+        "max_s": 0.37727799999999995,
+        "median_s": 0.37509037499999986,
+        "min_s": 0.37358708399999974,
+        "samples_s": [
+          0.37727799999999995,
+          0.37688066600000014,
+          0.374893334,
+          0.37509037499999986,
+          0.37358708399999974
+        ]
+      },
+      "weak_efficiency": 1.0
+    },
+    {
+      "cells_per_unit": 16384.0,
+      "n_cell": [
+        256,
+        128
+      ],
+      "p": 2,
+      "ranges": [
+        0.2005096196,
+        0.2731729502,
+        0.1127331146,
+        0.1887854766
+      ],
+      "result_identical_to_serial": null,
+      "steps": 50,
+      "timing": {
+        "mad_s": 0.0005454989999997828,
+        "max_s": 0.3897855830000001,
+        "median_s": 0.38759891700000004,
+        "min_s": 0.38665408299999937,
+        "samples_s": [
+          0.3881444159999998,
+          0.3897855830000001,
+          0.38759891700000004,
+          0.38665408299999937,
+          0.38726325000000017
+        ]
+      },
+      "weak_efficiency": 0.9677281296428386
+    },
+    {
+      "cells_per_unit": 16384.0,
+      "n_cell": [
+        256,
+        256
+      ],
+      "p": 4,
+      "ranges": [
+        0.2008440583,
+        0.2720218467,
+        0.113045471,
+        0.1874450179
+      ],
+      "result_identical_to_serial": null,
+      "steps": 50,
+      "timing": {
+        "mad_s": 0.0022869590000000883,
+        "max_s": 0.4240293340000001,
+        "median_s": 0.4161803339999999,
+        "min_s": 0.4138933749999998,
+        "samples_s": [
+          0.4188552090000002,
+          0.4161803339999999,
+          0.4138933749999998,
+          0.4240293340000001,
+          0.41502979200000034
+        ]
+      },
+      "weak_efficiency": 0.9012688595708609
+    },
+    {
+      "cells_per_unit": 16384.0,
+      "n_cell": [
+        512,
+        256
+      ],
+      "p": 8,
+      "ranges": [
+        0.2152743859,
+        0.2325064378,
+        0.1269055107,
+        0.1442851108
+      ],
+      "result_identical_to_serial": null,
+      "steps": 50,
+      "timing": {
+        "mad_s": 0.002940459000001283,
+        "max_s": 0.8142862080000004,
+        "median_s": 0.8011610420000004,
+        "min_s": 0.7982205829999991,
+        "samples_s": [
+          0.8011610420000004,
+          0.8123852080000002,
+          0.8142862080000004,
+          0.8000190420000006,
+          0.7982205829999991
+        ]
+      },
+      "weak_efficiency": 0.4681834928763295
+    }
+  ],
+  "schema_version": 1,
+  "topology": {
+    "efficiency_cores": 6,
+    "logical_cpus": 10,
+    "performance_cores": 4,
+    "physical_cpus": 10,
+    "platform": "macOS-15.7.9-arm64-arm-64bit"
+  },
+  "warmup_discarded": 1
+}

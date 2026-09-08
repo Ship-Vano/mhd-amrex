@@ -1,0 +1,61 @@
+{
+  "caveat": "single workstation, no pinning, no exclusive access: diagnostic timing, not a scaling result",
+  "config": {
+    "cfl": 0.5,
+    "integrator": "rk2",
+    "max_level": 1,
+    "n_cell": [
+      200,
+      200
+    ],
+    "path": "inputs/rotor.json",
+    "problem": "rotor",
+    "reflux": true,
+    "t_max": 0.15,
+    "write_plotfiles_forced_off": true
+  },
+  "derived": {
+    "base_cell_normalization_note": "base grid only; refined levels add cells, so this is not work-normalized across different max_level",
+    "base_cells": 40000,
+    "ms_per_step": 41.63289272978724,
+    "us_per_base_cell_step": 1.040822318244681
+  },
+  "kind": "compute_only",
+  "label": "\u0446\u0438\u043b\u0438\u043d\u0434\u0440 200^2 + 1 \u0443\u0440\u043e\u0432\u0435\u043d\u044c AMR",
+  "machine": {
+    "cpu_count": 10,
+    "executable": "build/release/mhd2d",
+    "executable_mtime": "2026-09-03T07:25:25Z",
+    "git_commit": "885e99484083dc4f543fc7bcd3c80e04735d689c",
+    "git_dirty": true,
+    "machine": "arm64",
+    "omp_num_threads": "1",
+    "platform": "macOS-15.7.9-arm64-arm-64bit",
+    "processor": "arm",
+    "python": "3.9.6"
+  },
+  "repeats": 5,
+  "run": {
+    "floor_events": 0,
+    "hlld_fallbacks": 0,
+    "nonpositive_cells": 0,
+    "steps": 470,
+    "t_end": 0.15
+  },
+  "schema_version": 1,
+  "timing": {
+    "mad_s": 0.03481016700000339,
+    "max_s": 19.71202125,
+    "median_s": 19.567459583,
+    "min_s": 19.523939584000004,
+    "relative_spread": 0.00961196138937721,
+    "samples_s": [
+      19.71202125,
+      19.567459583,
+      19.532649415999998,
+      19.568341250000003,
+      19.523939584000004
+    ]
+  },
+  "warmup_discarded": 1
+}
