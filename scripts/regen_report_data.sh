@@ -22,13 +22,25 @@ done
 mkdir -p "$OUT"
 cd "$ROOT"
 
-echo "== Brio-Wu 1-D ablation (N=400) and provisional AMReX reference (N=2048)"
+echo "== Brio-Wu 1-D ablation (N=400) and a converged AMReX profile (N=2048)"
 "$VERIFY" briowu1d 400  none euler bs 0.1 "$OUT/bw_n0_400.csv"  > /dev/null
 "$VERIFY" briowu1d 400  mc   rk2   gs 0.1 "$OUT/bw_n3_400.csv"  > /dev/null
 "$VERIFY" briowu1d 2048 mc   rk2   gs 0.1 "$OUT/bw_amrex_2048.csv" > /dev/null
 
 echo "== Brio-Wu independent reference (Kurganov-Tadmor, N=6400)"
 "$REFERENCE" 6400 0.1 "$OUT/bw_kt_6400.csv" 0.4
+
+# Профиль старой схемы для рис. 1 строится отдельно: он требует исходников
+# исторического решателя, которых в этом репозитории нет. Число бинов проекции
+# ОБЯЗАНО совпадать с сеткой, иначе кривая на графике и ширина фронта в подписи
+# посчитаны на разных сетках:
+#
+#   python3 scripts/run_legacy_corrected.py --source <MHD2D> --case brio_wu \
+#       --mesh-backend structured --structured-nx 400 --structured-ny 8 \
+#       --profile-bins 400 \
+#       --artifact-dir benchmarks/raw/rp3_convergence/legacy_bw_400
+#
+# и затем make_report_figures.py --bw-legacy <тот же путь>/brio_profile.csv
 
 echo "== Dai-Woodward 1-D"
 "$VERIFY" dw1d 400  none euler bs 0.2 "$OUT/dw_n0_400.csv"  > /dev/null

@@ -7,7 +7,7 @@ source run so the report figures stay traceable (RPT-004).
 Inputs (regenerate first if absent):
   ./build/release/mhd2d_verify briowu1d 400  none euler bs 0.1 /tmp/bw_N0.csv
   ./build/release/mhd2d_verify briowu1d 400  mc   rk2   gs 0.1 /tmp/bw_N3.csv
-  ./build/release/mhd2d_verify briowu1d 2048 mc   rk2   gs 0.1 /tmp/bw_ref.csv
+  ./build/release/mhd2d_briowu_reference 6400 0.1 kt_ref_6400.csv 0.4   # эталон
   ./build/release/mhd2d_verify ot 128        # -> out_ot.csv
   ./build/release/mhd2d_verify rotor 128     # -> out_rotor.csv
   ./build/release/mhd2d_verify alfven {16,32,64,128}  # -> out_alfven_*.csv
@@ -68,25 +68,41 @@ def _downsample(rows, target: int):
 
 
 def briowu(args):
+    """Профили Брио-Ву для рис. 1.
+
+    Эталон -- независимая центральная схема Куртганова-Тадмора (T06), а НЕ
+    сошедшийся расчёт самой проверяемой схемы: рисунок обязан показывать то же,
+    что утверждает подпись под ним. Профиль legacy проецируется на 400 бинов,
+    как и в исследовании сходимости РП3, иначе кривая на графике и ширина
+    фронта в подписи посчитаны на разных сетках.
+    """
     src = {
-        "legacy": Path("benchmarks/raw/legacy_corrected/brio_wu_struct_400x8_cmp/brio_profile.csv"),
+        "legacy": Path(args.bw_legacy),
         "n0": Path(args.bw_n0), "n3": Path(args.bw_n3), "ref": Path(args.bw_ref),
     }
-    # legacy area-weighted bin profile
     leg = []
     for row in csv.DictReader(src["legacy"].open()):
         leg.append((float(row["x"]), float(row["rho"]), float(row["vx"]),
                     float(row["by"]), float(row["pressure"])))
     _write("briowu1d_legacy.dat",
-           f"legacy_corrected Brio-Wu 400x8 structured, t=0.1, CFL 0.1; source {src['legacy']}",
+           f"legacy_corrected Brio-Wu 400x8 structured, {len(leg)} bins, "
+           f"t=0.1, CFL 0.1; source {src['legacy']}",
            ["x", "rho", "u", "By", "p"], leg)
-    for tag, nx, ndown in (("n0", 400, 200), ("n3", 400, 200), ("ref", 2048, 400)):
+    for tag, nx, ndown in (("n0", 400, 200), ("n3", 400, 200)):
         rows = _downsample(_collapse_strip(src[tag], nx), ndown)
-        label = {"n0": "AMReX N0 (const+Euler+BS)", "n3": "AMReX N3 (MUSCL+SSPRK2+GS)",
-                 "ref": "AMReX N3 N=2048 provisional reference"}[tag]
+        label = {"n0": "AMReX N0 (const+Euler+BS)",
+                 "n3": "AMReX N3 (MUSCL+SSPRK2+GS)"}[tag]
         _write(f"briowu1d_{tag}.dat",
                f"{label}, Nx={nx}, t=0.1, CFL 0.1; source {src[tag]}",
                ["x", "rho", "u", "By", "p"], rows)
+    # Эталон KT лежит одномерным CSV с другими именами столбцов (x,rho,u,v,w,p,By,Bz).
+    ref_rows = [(float(r["x"]), float(r["rho"]), float(r["u"]),
+                 float(r["By"]), float(r["p"]))
+                for r in csv.DictReader(src["ref"].open())]
+    _write("briowu1d_ref.dat",
+           f"independent Kurganov-Tadmor reference, Nx={len(ref_rows)}, t=0.1, "
+           f"CFL 0.4; source {src['ref']}",
+           ["x", "rho", "u", "By", "p"], _downsample(ref_rows, 400))
 
 
 def dai_woodward(args):
@@ -210,7 +226,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bw-n0", default="benchmarks/raw/report_inputs/bw_n0_400.csv")
     ap.add_argument("--bw-n3", default="benchmarks/raw/report_inputs/bw_n3_400.csv")
-    ap.add_argument("--bw-ref", default="benchmarks/raw/report_inputs/bw_amrex_2048.csv")
+    ap.add_argument("--bw-legacy",
+                    default="benchmarks/raw/rp3_convergence/legacy_bw_400/brio_profile.csv",
+                    help="профиль legacy на 400 бинах (как в РП3), а не на 256")
+    ap.add_argument("--bw-ref",
+                    default="benchmarks/raw/report_inputs/bw_kt_6400.csv",
+                    help="независимый эталон KT, а не сошедшийся расчёт самой схемы; "
+                         "порождается scripts/regen_report_data.sh")
     ap.add_argument("--rotor-vtu")
     ap.add_argument("--rotor-mesh")
     ap.add_argument("--dw-legacy", default="benchmarks/raw/legacy_corrected/riemann_1d_n400/dai_woodward_1d.csv")
