@@ -57,7 +57,7 @@ The GPU port (T12) must replace the `int*` counter with an atomic / reduction.
 | `standalone.alfven_order` (`tests/check_alfven_order.py`) | CP-Alfvén `L1(sum4)`: N=64 `2.365e-3`, N=128 `6.255e-4`, **observed order 1.919 ≥ 1.8** |
 | `standalone.briowu`, `standalone.alfven32` | now also assert `hlld_fallbacks=0` |
 
-`ctest --preset release`: **9/9 pass**.
+`ctest --preset release`: **21/21 pass** (на момент T04 набор состоял из 9 тестов; перечисленные здесь гейты входят в текущий набор без изменений).
 
 ## Canonical-case fallback / positivity audit
 

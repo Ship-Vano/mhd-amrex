@@ -1,12 +1,12 @@
 # Requirements-to-test register
 
-Стартовая матрица T00, обновлено 2026-09-03. Статус `planned` означает, что
+Стартовая матрица T00, обновлено 2026-09-08. Статус `planned` означает, что
 критерий принят, но ещё не доказан автоматическим тестом.
 
 | ID | Требование | Проверка / будущий артефакт | Статус | Фаза |
 |---|---|---|---|---|
 | ENG-001 | clean configure/build | пресеты `release`, `cpu-release`, `cpu-debug`, `mpi-release`, `profile`, `hdf5-release` конфигурируются; `cuda-release` объявлен, но на этой машине не собирается (нет GPU) | **implemented (T02+T14)** | T02 |
-| ENG-002 | reproducible regression | CTest 17/17: ядра, standalone, конфиг, канонические задачи, `amr.conservation`, `arch.kernel_purity`, manifest repeat. Проверено и под `cpu-debug` (AMReX assertions + bound check) | **implemented (T02+T04+T07)** | T02 |
+| ENG-002 | reproducible regression | CTest 21/21: ядра, standalone, конфиг, канонические задачи, `amr.conservation`, `arch.kernel_purity`, manifest repeat. Проверено и под `cpu-debug` (AMReX assertions + bound check) | **implemented (T02+T04+T07)** | T02 |
 | CFG-001 | strict JSON schema | valid and intentionally invalid JSON CTests | implemented (T02) | T02 |
 | NUM-001 | primitive/conservative states | `kernel.numerics::test_conversions` (2000-sample round trip + `pressure_from_cons`) | **implemented (T04)** | T04 |
 | NUM-002 | HLLD consistency and degeneracies | `kernel.numerics`: `F(q,q)=F_phys` (3000), supersonic branches, `Bn=0`, Brio--Wu, RD, 20000-sample finiteness sweep | **implemented (T04)** | T04 |
@@ -19,7 +19,8 @@
 | LEG-002 | `legacy_corrected` physically admissible end-to-end | **все 6 канонических карт** доходят до конца с манифестом и пройденным quality gate, включая вихрь Орзага–Танга (решение D-009) и вращающийся цилиндр на нерегулярной сетке Netgen | **implemented (T05)** | T05 |
 | LEG-003 | воспроизводимый сеточный конвейер Netgen | закреплённый venv (`numpy` + `netgen-mesher 6.2.2506`), `scripts/legacy_netgen_mesh.py`, метаданные качества сетки в манифесте | **implemented**: `docs/MESH_PIPELINE.md`; прогон `benchmarks/raw/legacy_corrected/rotor_netgen/` (16242 треугольника, gate pass) | T05 |
 | BW-001 | Brio--Wu extrema diagnosis | независимый эталон (KT, без решателя Римана), версионированная разметка фронтов, метрики L1/L2/Linf + TV excess + over/undershoot + положение и ширина фронта | **implemented (T06)**: `docs/BRIOWU_T06.md`, гейт `briowu.independent_reference` | T06 |
-| CMP-001 | legacy vs AMReX quality comparison | `scripts/compare_briowu_1d.py`, `benchmarks/summary/briowu_1d_comparison.json`, `docs/CROSS_SOLVER_BRIOWU_1D.md` (equal-spacing + equal-cost, provisional reference) | **partial (T08 Level A, Brio--Wu only)** | T08 |
-| PERF-001 | benchmark provenance and repeats | `scripts/benchmark.py`: машинный манифест + git-commit, ≥1 прогрев и ≥5 повторов, медиана и MAD, compute-only отдельно от end-to-end; 14 регионов `BL_PROFILE`, пресет `profile` | **implemented (T09)**: `docs/T09_TIMING.md`; кампания с пиннингом требует кластера (D-005) | T09 |
-| GPU-001 | CUDA parity | CUDA CTest suite and profiles | absent | T12 |
-| RPT-001 | report claim evidence | [CLAIM_TO_EVIDENCE.md](CLAIM_TO_EVIDENCE.md) | planned | T01 |
+| CMP-001 | legacy vs AMReX quality comparison | общая метрика `delta_N` при равном разрешении против **независимого** эталона, `N = 64…512`; ширина фронта отдельно от ошибки; разложение выигрыша на «сетка» и «порядок»: `scripts/vkr_delta_n.py`, `benchmarks/summary/rp3_delta_n.json`, `docs/RP3_SCHEME_COMPARISON.md` | **implemented (РП3)** | T08 |
+| PERF-001 | benchmark provenance and repeats | `scripts/benchmark.py`: машинный манифест + git-commit, ≥1 прогрев и ≥5 повторов, медиана и MAD, флаг `--compute-only` (иначе строки несравнимы), `ms_per_step` и `us_per_base_cell_step`; 14 регионов `BL_PROFILE`, пресет `profile` | **implemented (РП4)**: все 9 случаев в одном режиме, `docs/RP4_RP5_PERFORMANCE.md` | T09 |
+| SCL-001 | strong and weak scaling | `scripts/scaling.py --mode {mpi,omp,weak}` c проверкой совпадения диапазонов ρ/p с серийным прогоном; `--launcher` делает кластерный запуск тем же кодом | **implemented на одном узле (РП5)**: `docs/RP4_RP5_PERFORMANCE.md`; многоузловое блокировано D-005 | T11 |
+| GPU-001 | CUDA parity | CUDA CTest suite and profiles | **blocked**: нет `nvcc` и NVIDIA GPU; выполнен аудит переносимости и составлен план первого захода — `docs/RP7_GPU_READINESS.md` | T12 |
+| RPT-001 | report claim evidence | [CLAIM_TO_EVIDENCE.md](CLAIM_TO_EVIDENCE.md), 46 строк; `docs/report.tex` и `docs/REPORT.md` ссылаются на ID | **implemented** | T01 |
