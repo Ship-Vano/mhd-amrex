@@ -1,6 +1,11 @@
 #!/bin/bash
 # ШАБЛОН: сильное масштабирование нового решателя. НЕ ПРОВЕРЕН НА ОЧЕРЕДИ.
 # Заполнить <...> перед запуском; см. scripts/cluster/README.md.
+#
+# Замеры делает scripts/scaling.py -- тот же код, что и на рабочей станции.
+# Отдельной "кластерной" реализации замера нет намеренно: она разошлась бы с
+# основной по определению медианы, числу повторов и проверке корректности, и
+# кластерные числа стало бы не с чем сравнивать.
 #SBATCH --job-name=mhd2d-strong
 #SBATCH --account=<ACCOUNT>
 #SBATCH --partition=<PARTITION>
@@ -16,8 +21,9 @@ module load <COMPILER_MODULE> <MPI_MODULE> <CMAKE_MODULE>
 
 ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
 BUILD="$ROOT/build/cluster-$SLURM_JOB_ID"
-CONFIG="${CONFIG:-$ROOT/inputs/orszag_tang.json}"
+CONFIG="${CONFIG:-$ROOT/inputs/orszag_tang_uniform.json}"
 OUT="$ROOT/benchmarks/raw/cluster/$SLURM_JOB_ID"
+COUNTS="${COUNTS:-1,2,4,8,16,32}"
 mkdir -p "$OUT"
 
 # 1. Собираем там же, где считаем.
@@ -41,19 +47,26 @@ ctest --test-dir "$BUILD" --output-on-failure | tee "$OUT/ctest.log"
   lscpu 2>/dev/null || true
 } > "$OUT/environment.txt"
 
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export OMP_NUM_THREADS=1
 export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 
-# 4. Развёртка по числу рангов. Прогрев отбрасывается, повторов >= 5.
-for RANKS in 1 2 4 8 16 32; do
-    [ "$RANKS" -le "$SLURM_NTASKS" ] || continue
-    srun --ntasks="$RANKS" "$BUILD/mhd2d" "$CONFIG" > "$OUT/warmup_$RANKS.log" 2>&1 || true
-    for REP in 1 2 3 4 5; do
-        /usr/bin/time -f "%e" -o "$OUT/time_${RANKS}_${REP}.txt" \
-            srun --ntasks="$RANKS" "$BUILD/mhd2d" "$CONFIG" \
-            > "$OUT/run_${RANKS}_${REP}.log" 2>&1
-    done
-done
+# 4. Сильное масштабирование по рангам MPI. Прогрев отбрасывается, повторов >= 5,
+#    отчитывается медиана с MAD; прогон, изменивший диапазоны rho/p относительно
+#    серийного, помечается как расхождение и скрипт возвращает ненулевой код.
+python3 "$ROOT/scripts/scaling.py" \
+    --executable "$BUILD/mhd2d" --config "$CONFIG" \
+    --mode mpi --counts "$COUNTS" --repeats 5 --warmup 1 \
+    --launcher 'srun --ntasks={p}' \
+    --output "$OUT/scaling_mpi.json" | tee "$OUT/scaling_mpi.log"
 
-echo "raw results in $OUT; summarise with scripts/scaling.py conventions"
+# 5. То же по потокам OpenMP внутри одного узла (для сравнения с MPI).
+if [ "${RUN_OMP:-1}" = "1" ]; then
+  srun --ntasks=1 --cpus-per-task="${SLURM_CPUS_PER_TASK:-1}" \
+    python3 "$ROOT/scripts/scaling.py" \
+      --executable "$BUILD/mhd2d" --config "$CONFIG" \
+      --mode omp --counts "${OMP_COUNTS:-1,2,4,8}" --repeats 5 --warmup 1 \
+      --output "$OUT/scaling_omp.json" | tee "$OUT/scaling_omp.log"
+fi
+
+echo "результаты: $OUT/scaling_{mpi,omp}.json (схема совпадает с benchmarks/summary/)"

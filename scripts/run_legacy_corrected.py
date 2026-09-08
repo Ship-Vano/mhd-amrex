@@ -274,6 +274,13 @@ def main() -> int:
                              "(reproducible, no Netgen, shares its hash with legacy_vkr)")
     parser.add_argument("--structured-nx", type=int,
                         help="override the case structured x resolution (rectangles)")
+    parser.add_argument("--profile-bins", type=int, default=256,
+                        help="число бинов при проекции 1-D профиля Брио--Ву. "
+                             "По умолчанию 256 -- значение, на котором получены "
+                             "уже записанные результаты. Для исследования "
+                             "сходимости надо задавать равным --structured-nx, "
+                             "иначе метрика упирается в разрешение проекции, а "
+                             "не схемы.")
     parser.add_argument("--structured-ny", type=int,
                         help="override the case structured y resolution (rectangles)")
     parser.add_argument("--compiler", default=shutil.which("g++-15") or
@@ -317,6 +324,11 @@ def main() -> int:
         structured_ny = args.structured_ny
     if args.mesh_backend == "structured" and not (structured_nx > 0 and structured_ny > 0):
         raise SystemExit("structured backend needs a positive nx/ny (case default or override)")
+    # Проекция 1-D профиля: при исследовании сходимости число бинов должно
+    # следовать за сеткой, иначе измеряется разрешение проекции, а не схемы.
+    profile_bins = args.profile_bins
+    if profile_bins <= 0:
+        raise SystemExit("--profile-bins must be positive")
     artifact.mkdir(parents=True)
     worktree = artifact / "source"
     build = artifact / "build"
@@ -521,7 +533,7 @@ def main() -> int:
         projection = invoke([
             sys.executable, str(ROOT / "scripts/project_legacy_vtu.py"),
             "--mesh", str(artifact / "mesh.txt"), "--vtu", str(artifact / "final.vtu"),
-            "--gamma", str(case["gamma"]), "--bins", "256",
+            "--gamma", str(case["gamma"]), "--bins", str(profile_bins),
             "--csv", str(profile_csv), "--summary", str(profile_json),
         ])
         if projection.returncode:
