@@ -110,6 +110,7 @@ Data: `docs/figures/data/rotor_diag_*.dat`,
 |---|---:|---|---|---:|:--:|
 | mhd-amrex (standalone) | 128 | [0.091, 0.492] | [0.028, 0.505] | 5e-13 | yes |
 | legacy_corrected (structured, CFL 0.5) | 128 | [0.0953, 0.4018] | [0.0417, 0.4454] | 5.7e-17 | **yes** (after D-009) |
+| legacy_corrected (structured, CFL 0.5) | 256 | [0.0886, 0.4262] | [0.0379, 0.4619] | 8.0e-15 | **yes**, 0 floor events |
 | VKR Fig. 23–26 | ≈400 (Netgen) | ~[0.09, 0.48] | ~[0.028, 0.49] | — | yes |
 | Avdeeva–Lukin Fig. 7 / 25 | 800 | [0.087, 0.489] | [0.028, 0.49] | roundoff | yes |
 
@@ -142,12 +143,24 @@ source:
 | `conservative` (previous) + floor | 2017 | 14300 |
 | `preserve_internal` (now default) | 2012 | **0** |
 
-The resulting extrema, ρ [0.0953, 0.4018] and p [0.0417, 0.4454] against
-Avdeeva–Lukin's [0.087, 0.489] / [0.028, 0.490] at N=800, are the literature
-solution narrowed by first-order diffusion at a third of the reference
-resolution; the structure (central diamond, symmetric density lobes, diagonal
-fronts) is reproduced. Closing the remaining gap is a resolution question, not a
-correctness one.
+The extrema converge toward the literature under refinement, which is what
+turns "resolution question" from an assertion into a measurement:
+
+| | ρ_min | ρ_max | p_min | p_max |
+|---|---:|---:|---:|---:|
+| N=128 | 0.0953 | 0.4018 | 0.0417 | 0.4454 |
+| N=256 | 0.0886 | 0.4262 | 0.0379 | 0.4619 |
+| Avdeeva–Lukin, N=800 | 0.0870 | 0.4890 | 0.0280 | 0.4900 |
+| deviation at N=128 | +9.5 % | −17.8 % | +48.9 % | −9.1 % |
+| deviation at N=256 | **+1.8 %** | **−12.8 %** | **+35.4 %** | **−5.7 %** |
+
+Every extremum moves toward the reference; ρ_min lands within 1.8 %. The
+remaining gap is one-sided in the direction diffusion predicts — peaks too low,
+troughs too high — and shrinks with resolution, so it is the first-order
+truncation error at a third of the reference resolution, not a defect. The
+structure (central diamond, symmetric density lobes, diagonal fronts) is
+reproduced at both resolutions. N=256 needs 4055 iterations and, notably, still
+zero pressure-floor events.
 Data: `docs/figures/data/ot_slice.dat`.
 
 ## 5. Magnetic field loop
