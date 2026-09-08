@@ -100,6 +100,19 @@ mpirun -np 4 ./build/release/mhd2d inputs/orszag_tang.json
 (`none` = первый порядок), `time.integrator` (`euler` | `rk2`),
 `scheme.emf_averaging` (`balsara_spicer` | `gardiner_stone`).
 
+Автономный драйвер принимает восьмым аргументом набор переменных
+реконструкции — `prim` (рабочий) или `cons`; последний нужен только для
+проверки гипотезы о происхождении перелёта (§ 4 в `docs/RP1_MONOTONICITY.md`).
+
+Полная матрица аблации «одна деталь за раз» против независимого эталона:
+
+```sh
+./build/release/briowu_reference 6400 0.1 benchmarks/raw/rp1_limiters/kt_ref_6400.csv 0.4
+python3 scripts/limiter_study.py --verify ./build/release/mhd2d_verify \
+    --reference-csv benchmarks/raw/rp1_limiters/kt_ref_6400.csv --nx 400 --cfl 0.1 \
+    --output benchmarks/summary/rp1_limiter_study_n400.json
+```
+
 ---
 
 ## 4. Сценарии исторического решателя
