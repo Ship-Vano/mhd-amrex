@@ -149,6 +149,43 @@ def score(reference: Path, candidate: Path, nx: int, label: str) -> dict:
     return out
 
 
+def cfl_sweep(args) -> int:
+    """РП2: сравнение SSP и не-SSP интеграторов вдоль шага по времени.
+
+    Утверждение «SSP-RK2 не хуже средней точки» проверяемо только там, где
+    SSP-свойство вообще что-то гарантирует, — у границы устойчивости. Прогон,
+    который не дошёл до t_end или дал непригодное состояние, записывается как
+    отказ: это тоже результат.
+    """
+    rows = []
+    for ti in CFL_SWEEP_INTEGRATORS:
+        for cfl in CFL_SWEEP_VALUES:
+            csv_path = args.raw_dir / f"cflsweep_{ti}_{cfl}_{args.nx}.csv"
+            try:
+                wall, hlld_fb, recon_fb = run_case(args.verify, args.nx, "mc", ti,
+                                                   "gs", cfl, csv_path)
+            except SystemExit:
+                rows.append({"integrator": ti, "cfl": cfl, "failed": True})
+                print(f"  {ti:9s} CFL={cfl:<4} ОТКАЗ (расчёт не дошёл до t_end)")
+                continue
+            rec = score(args.reference_csv, csv_path, args.nx, f"{ti} CFL={cfl}")
+            rec.update({"integrator": ti, "cfl": cfl, "failed": False,
+                        "wall_s": wall, "hlld_fallbacks": hlld_fb,
+                        "recon_fallbacks": recon_fb, "csv": str(csv_path)})
+            rows.append(rec)
+            print(f"  {ti:9s} CFL={cfl:<4} L1={rec['mean_relative_l1']:.3e}  "
+                  f"overshoot={rec['max_relative_overshoot']:.3e}  "
+                  f"signchg={rec['total_sign_changes']}  "
+                  f"hlld_fb={hlld_fb}  {wall:.2f} s")
+    record = {"schema_version": 1, "case": "brio_wu", "t": 0.1, "nx": args.nx,
+              "sweep": "integrator x cfl", "limiter": "mc", "emf": "gs",
+              "reference": str(args.reference_csv), "rows": rows}
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verify", required=True)
@@ -159,9 +196,16 @@ def main() -> int:
     ap.add_argument("--raw-dir", type=Path,
                     default=Path("benchmarks/raw/rp1_limiters"))
     ap.add_argument("--output", type=Path)
+    ap.add_argument("--cfl-sweep", action="store_true",
+                    help="вместо основной матрицы: развёртка интеграторов по CFL "
+                         "(РП2 -- SSP-свойство есть утверждение о том, до какого "
+                         "числа Куранта TVD-оценка переносится на шаг целиком, "
+                         "поэтому одной точки CFL для вывода недостаточно)")
     args = ap.parse_args()
 
     args.raw_dir.mkdir(parents=True, exist_ok=True)
+    if args.cfl_sweep:
+        return cfl_sweep(args)
     rows = []
     for label, lim, ti, emf, rvars, cfl_override, group, note in MATRIX:
         cfl = args.cfl if cfl_override is None else cfl_override
