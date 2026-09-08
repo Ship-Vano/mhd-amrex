@@ -41,6 +41,26 @@ import briowu_fronts as bf  # noqa: E402
 VARS = ("rho", "u", "p", "By")
 
 
+def load_legacy_profile(path: Path) -> list[dict]:
+    """Профиль legacy_corrected после проекции с треугольной сетки.
+
+    scripts/project_legacy_vtu.py даёт другие имена столбцов (pressure, vx, by)
+    и уже приводит x к [0, 1], поэтому сдвиг координаты здесь не нужен --
+    в отличие от одномерного legacy-драйвера, который считает на [-0.5, 0.5].
+    """
+    import csv
+    rename = {"rho": "rho", "vx": "u", "pressure": "p", "by": "By"}
+    rows = []
+    for r in csv.DictReader(path.open()):
+        row = {"x": float(r["x"])}
+        for src, dst in rename.items():
+            row[dst] = float(r[src])
+        rows.append(row)
+    if not rows:
+        raise SystemExit(f"{path}: пустой профиль")
+    return rows
+
+
 def delta_n(cand: list[dict], ref: list[dict]) -> dict:
     """Метрика ВКР и обычные L1/L2, все на сетке кандидата."""
     xs = [r["x"] for r in cand]
@@ -143,10 +163,7 @@ def main() -> int:
         if not legacy_csv.is_file():
             print(f"  legacy N={nx}: профиль отсутствует ({legacy_csv}) — пропуск")
             continue
-        # Историческая область [-0.5, 0.5] против [0, 1] у эталона.
-        cand = bf.load(legacy_csv)
-        for r in cand:
-            r["x"] += 0.5
+        cand = load_legacy_profile(legacy_csv)
         row = {"nx": nx, "csv": str(legacy_csv)}
         row["independent"] = delta_n(cand, ref)
         row["front_widths_cells"] = widths(cand, ref)
