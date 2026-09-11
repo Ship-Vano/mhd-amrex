@@ -76,6 +76,16 @@ target_include_directories(mhd2d PRIVATE src)
 target_compile_definitions(mhd2d PRIVATE MHD_WITH_AMREX)
 target_link_libraries(mhd2d PRIVATE ${AMREX_TARGET} nlohmann_json::nlohmann_json)
 
+# AMReX headers expose GPU kernels from .cpp translation units.  Mark the
+# solver sources as CUDA only for the CUDA backend, so device lambdas are
+# compiled by nvcc while the CPU build remains ordinary C++.
+if(AMReX_GPU_BACKEND STREQUAL "CUDA")
+  if(NOT COMMAND setup_target_for_cuda_compilation)
+    message(FATAL_ERROR "AMReX CUDA helper is unavailable; use an AMReX CUDA build")
+  endif()
+  setup_target_for_cuda_compilation(mhd2d)
+endif()
+
 if(MHD_OPENMP)
   find_package(OpenMP)
   if(OpenMP_CXX_FOUND)
@@ -148,6 +158,15 @@ if(BUILD_TESTING)
                    --executable $<TARGET_FILE:mhd2d>
                    --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/amr_conservation.json)
 
+  # Парный к mpi.decomposition_parity: результат не должен зависеть и от числа
+  # потоков внутри ранга. Задача выбрана с ненулевыми счётчиками, иначе по ним
+  # нечего сравнивать. Тест НЕ является детектором гонок -- см. его docstring.
+  add_test(NAME omp.thread_parity
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_omp_parity.py
+                   --executable $<TARGET_FILE:mhd2d>
+                   --config ${CMAKE_CURRENT_SOURCE_DIR}/inputs/mhd_blast.json
+                   --require-nonzero-counters)
+
   # NEW-004: режимы аблации задаются конфигом и действительно влияют на результат.
   add_test(NAME config.ablation_modes
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_ablation_modes.py
@@ -166,6 +185,11 @@ if(BUILD_TESTING)
   add_test(NAME arch.kernel_purity
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_kernel_purity.py
                    --kernel-dir ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels)
+  # Structural CUDA gate: catches accidental host-only loops/captures before a
+  # CUDA machine is consumed.  It is deliberately not evidence of GPU parity.
+  add_test(NAME arch.gpu_portability
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_gpu_portability.py
+                   --source-dir ${CMAKE_CURRENT_SOURCE_DIR})
 
   # Обязательная матрица канонических задач (PROGRAM_PLAN). Диапазоны rho и p --
   # литературные цветовые шкалы, поэтому тест ловит не только падение, но и

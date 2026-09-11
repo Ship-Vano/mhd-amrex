@@ -94,7 +94,9 @@
         "CMAKE_CXX_COMPILER": "g++",
         "MHD_MPI": "ON",
         "MHD_OPENMP": "OFF",
-        "AMReX_GPU_BACKEND": "CUDA"
+        "AMReX_GPU_BACKEND": "CUDA",
+        "CMAKE_CUDA_ARCHITECTURES": "89",
+        "AMReX_CUDA_FASTMATH": "OFF"
       }
     }
   ],
@@ -104,13 +106,15 @@
     { "name": "cpu-debug",    "configurePreset": "cpu-debug",    "jobs": 8 },
     { "name": "mpi-release",  "configurePreset": "mpi-release",  "jobs": 8 },
     { "name": "profile",      "configurePreset": "profile",      "jobs": 8 },
-    { "name": "hdf5-release", "configurePreset": "hdf5-release", "jobs": 8 }
+    { "name": "hdf5-release", "configurePreset": "hdf5-release", "jobs": 8 },
+    { "name": "cuda-release", "configurePreset": "cuda-release", "jobs": 8 }
   ],
   "testPresets": [
     { "name": "release",     "configurePreset": "release",     "output": { "outputOnFailure": true } },
     { "name": "cpu-release", "configurePreset": "cpu-release", "output": { "outputOnFailure": true } },
     { "name": "cpu-debug",   "configurePreset": "cpu-debug",   "output": { "outputOnFailure": true } },
     { "name": "mpi-release", "configurePreset": "mpi-release", "output": { "outputOnFailure": true } },
-    { "name": "profile",     "configurePreset": "profile",     "output": { "outputOnFailure": true } }
+    { "name": "profile",     "configurePreset": "profile",     "output": { "outputOnFailure": true } },
+    { "name": "cuda-release", "configurePreset": "cuda-release", "output": { "outputOnFailure": true } }
   ]
 }

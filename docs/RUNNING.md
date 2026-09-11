@@ -26,7 +26,7 @@
 ```sh
 cmake --preset release          # MPI + OpenMP, Release
 cmake --build --preset release -j 8
-ctest --preset release          # 21 тест, ~15 c
+ctest --preset release          # 22 теста, ~15 c
 ```
 
 Другие пресеты (`cmake --list-presets`):
@@ -39,7 +39,7 @@ ctest --preset release          # 21 тест, ~15 c
 | `mpi-release` | MPI без OpenMP: масштабирование по рангам |
 | `profile` | `AMReX_TINY_PROFILE` — профиль горячего пути |
 | `hdf5-release` | вывод HDF5 |
-| `cuda-release` | объявлен, **на этой машине не собирается** (нет GPU NVIDIA) |
+| `cuda-release` | CUDA Release для NVIDIA; preset нацелен на Ada `sm_89` (RTX 4090) |
 
 ---
 
@@ -65,8 +65,34 @@ ctest --preset release --output-on-failure -R briowu.independent_reference
 | `mpi.decomposition_parity` | результат не зависит от числа рангов (1/2/4) |
 | `briowu.independent_reference` | согласие с независимой схемой (Куртганова–Тадмора) |
 | `arch.kernel_purity` | слой ядер не тянет контейнеры AMReX (ADR 0001) |
+| `arch.gpu_portability` | статически ловит host-only loop/capture и потерю CUDA boundary/reduction пути |
 | `config.*` | строгая схема конфигурации, режимы аблации реально влияют |
 | `manifest.repeatable` | детерминированность манифеста прогона |
+
+### CUDA / RTX 4090
+
+На машине с CUDA Toolkit 12.x и RTX 4090 собирайте независимые CPU и GPU
+каталоги: `CMAKE_CUDA_ARCHITECTURES=89` уже задан в preset. CUDA fast math
+отключён намеренно, пока не доказан parity. Не используйте GPU-бинарник как
+CPU-reference.
+
+```sh
+cmake --preset cpu-release
+cmake --build --preset cpu-release
+cmake --preset cuda-release
+cmake --build --preset cuda-release
+ctest --preset cuda-release -E '^mpi\.decomposition_parity$'
+python3 tests/check_cpu_gpu_parity.py \
+  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
+  --config inputs/uniform_const.json --output-dir benchmarks/raw/cuda/parity-uniform
+python3 tests/check_cpu_gpu_parity.py \
+  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
+  --config inputs/orszag_tang_uniform.json --output-dir benchmarks/raw/cuda/parity-orszag
+```
+
+Parity сопоставляет `rho/p`, нормы `div B` и счётчики fallback/floor. До его
+прохождения измерять скорость нельзя. Multi-rank MPI/GPU, Nsight и performance
+conclusions этим single-GPU gate не покрываются.
 
 ---
 
@@ -189,16 +215,53 @@ cd docs && latexmk -pdf report.tex       # 19 страниц, 0 overfull
 
 ---
 
-## 7. Кластер
+## 7. Кластер и Ubuntu/RTX 4090
+
+Перед первым запуском соберите preflight-отчёт на **compute node**, а не на
+login node:
+
+```sh
+bash scripts/cluster/collect_system_info.sh --output /tmp/mhd-preflight.txt
+```
+
+В отчёте должны быть `nvidia-smi`, `nvcc`, компилятор, CMake, MPI, Slurm,
+CPU/RAM/диск, загруженные modules и commit checkout. Пароли, токены и ключи
+в него не попадают; пути/имя пользователя при необходимости можно редактировать
+перед отправкой.
 
 Доступа и параметров планировщика нет (решение D-005), поэтому скрипты в
 `scripts/cluster/` — **шаблоны**, они не проверены на реальной очереди. Перед
 первым запуском заполнить `--account`, `--partition` и модули окружения.
 
+Для новой кампании используйте единый launcher, а не редактирование sbatch
+файлов в дереве проекта:
+
 ```sh
-sbatch scripts/cluster/mhd2d_strong_scaling.sbatch
-sbatch scripts/cluster/legacy_corrected_case.sbatch
+cp scripts/cluster/campaign.env.example scripts/cluster/sites/k10.env
+# заполните путь к durable storage, account/partition, modules и лимиты
+scripts/cluster/submit_campaign.sh --site scripts/cluster/sites/k10.env \
+    --legacy-source /path/to/MHD2D --dry-run
+scripts/cluster/submit_campaign.sh --site scripts/cluster/sites/k10.env \
+    --legacy-source /path/to/MHD2D --cuda-validation
 ```
+
+Он ставит `amrex CPU validation -> strong/weak scaling` и независимый
+`legacy_corrected` smoke run. Исходные деревья не модифицируются: сборки живут
+в node-local temporary directory, а результаты — в новом каталоге campaign.
+Сначала всегда проверьте `--dry-run`. Launcher принимает только чистый
+checkout и job сверяет его commit перед сборкой, поэтому результаты не могут
+тихо попасть от изменившегося после submit кода.
+
+На удалённом Ubuntu-хосте (включая RTX 4090):
+
+```sh
+scripts/cluster/run_ubuntu4090.sh --legacy-source /path/to/MHD2D \
+    --artifact-root /data/mhd-artifacts
+```
+
+`--cuda-validation` создаёт отдельные CPU-reference и CUDA builds, запускает
+CUDA CTest (кроме multi-rank MPI parity) и сохраняет логи двух CPU/GPU
+parity-case. Это single-GPU correctness gate, а не GPU benchmark.
 
 Что нужно получить от владельца до запуска: планировщик и его версия, account
 и partition, лимиты по времени и памяти, спецификация узла (ядра, сокеты,

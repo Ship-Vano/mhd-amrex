@@ -29,6 +29,9 @@
 /results/
 /benchmarks/raw/
 
+# Site-specific cluster settings may contain local paths and allocation names.
+/scripts/cluster/sites/*.env
+
 # Generated verification artifacts (canonical report figures live in docs/figures)
 /out_*.csv
 /tests/*.csv

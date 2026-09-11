@@ -98,7 +98,7 @@ private:
     void WritePlotFile(int step, amrex::Real time);
 
     SimConfig cfg_;
-    Problem   prob_;
+    DeviceProblem prob_;  // POD: safe to capture by value in device lambdas
 
     // данные уровня: [lev]
     amrex::Vector<amrex::MultiFab> state_;                                   // NCONS, 2 ghost

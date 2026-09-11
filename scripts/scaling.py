@@ -107,17 +107,30 @@ def main() -> int:
             # мелкая сетка потребует их больше по условию Куранта и «слабое
             # масштабирование» померяет рост объёма работы, а не накладные расходы.
             nx, ny = cells
+            scale_x, scale_y = 1, 1
             f = p
             while f > 1:
                 if f % 2:
                     raise SystemExit("--mode weak требует степени двойки в --counts")
                 if nx <= ny:
                     nx *= 2
+                    scale_x *= 2
                 else:
                     ny *= 2
+                    scale_y *= 2
                 f //= 2
             weak_cfg = json.loads(args.config.read_text())
             weak_cfg["geometry"]["n_cell"] = [nx, ny]
+            # Weak scaling retains local mesh spacing while adding ranks.  The
+            # periodic canonical configurations tile over this enlarged domain;
+            # raising n_cell in a fixed box would instead measure a different,
+            # increasingly fine problem.
+            prob_lo = weak_cfg["geometry"]["prob_lo"]
+            prob_hi = weak_cfg["geometry"]["prob_hi"]
+            weak_cfg["geometry"]["prob_hi"] = [
+                prob_lo[0] + (prob_hi[0] - prob_lo[0]) * scale_x,
+                prob_lo[1] + (prob_hi[1] - prob_lo[1]) * scale_y,
+            ]
             weak_cfg["time"]["max_steps"] = args.weak_steps
             weak_cfg["time"]["t_max"] = 1.0e9
             config_path = tmpdir / f"weak_{p}.json"
@@ -141,7 +154,11 @@ def main() -> int:
             row_cells = json.loads(config_path.read_text())["geometry"]["n_cell"]
             rows.append({
                 "p": p, "timing": timing, "weak_efficiency": speedup,
-                "n_cell": row_cells, "cells_per_unit": row_cells[0] * row_cells[1] / p,
+                "n_cell": row_cells,
+                "prob_lo": weak_cfg["geometry"]["prob_lo"],
+                "prob_hi": weak_cfg["geometry"]["prob_hi"],
+                "domain_scale": [scale_x, scale_y],
+                "cells_per_unit": row_cells[0] * row_cells[1] / p,
                 "steps": info["steps"], "ranges": info["ranges"],
                 "result_identical_to_serial": None,
             })

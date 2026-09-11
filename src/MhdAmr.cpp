@@ -14,6 +14,9 @@
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_TagBox.H>
 #include <AMReX_Loop.H>
+#include <AMReX_GpuAtomic.H>
+#include <AMReX_GpuMemory.H>
+#include <AMReX_Reduce.H>
 #include <AMReX_Utility.H>
 #ifdef AMREX_USE_HDF5
 #include <AMReX_PlotFileUtilHDF5.H>
@@ -37,54 +40,40 @@ constexpr int NGROW = 3;   // фантомных слоёв у клеточны�
                            // MUSCL-реконструкции на гранях, выходящих на 1
                            // ячейку за валидную область (нужно узловым ЭДС)
 
-// Текущая задача — для функции заполнения ext_dir-границ (CpuBndryFuncFab).
-const Problem* g_problem = nullptr;
-double g_gamma = 5.0 / 3.0;
+// Device implementation of ext_dir.  AMReX's GpuBndryFuncFab handles normal
+// outflow/reflect fill first; this functor overwrites only frozen ext_dir data.
+struct ExtDirGpuFill {
+    DeviceProblem problem;
+    Real gamma;
 
-// Заполнение физических границ клеточных величин типа ext_dir («исторические»
-// ГУ: замороженные значения начального условия, как в тесте Брио–Ву из ВКРБ).
-// Сигнатура — amrex::UserFillBox (см. AMReX_PhysBCFunct.H, AMReX >= 22.xx):
-// CpuBndryFuncFab сам обрабатывает foextrap/reflect_* и вызывает эту функцию
-// только при наличии ext_dir-компонент; bcr указывает на BCRec первой
-// заполняемой компоненты (bcomp = 0).
-void ext_dir_fill(amrex::Box const& bx, amrex::Array4<amrex::Real> const& arr,
-                  int dcomp, int numcomp,
-                  amrex::GeometryData const& geom, amrex::Real /*time*/,
-                  const amrex::BCRec* bcr, int /*bcomp*/, int /*orig_comp*/)
-{
-    const Box& domain = geom.Domain();
-    const double dx0 = geom.CellSize(0), dx1 = geom.CellSize(1);
-    const double plo0 = geom.ProbLo(0),  plo1 = geom.ProbLo(1);
-
-    amrex::LoopOnCpu(bx, [&] (int i, int j, int k)
+    AMREX_GPU_DEVICE void operator() (const IntVect& iv, Array4<Real> const& arr,
+                                      int dcomp, int numcomp, GeometryData const& geom,
+                                      Real, const BCRec* bcr, int, int) const noexcept
     {
-        if (domain.contains(IntVect(AMREX_D_DECL(i, j, k)))) return;
+        const Box& domain = geom.Domain();
         bool ext = false;
         for (int dim = 0; dim < AMREX_SPACEDIM; ++dim) {
-            const int lo = domain.smallEnd(dim), hi = domain.bigEnd(dim);
-            const int idx = (dim == 0) ? i : j;
-            if ((idx < lo && bcr[0].lo(dim) == BCType::ext_dir) ||
-                (idx > hi && bcr[0].hi(dim) == BCType::ext_dir)) ext = true;
+            const int idx = (dim == 0) ? iv[0] : iv[1];
+            if ((idx < domain.smallEnd(dim) && bcr[0].lo(dim) == BCType::ext_dir) ||
+                (idx > domain.bigEnd(dim) && bcr[0].hi(dim) == BCType::ext_dir)) ext = true;
         }
         if (!ext) return;
-        const double x = plo0 + (i + 0.5) * dx0;
-        const double y = plo1 + (j + 0.5) * dx1;
-        double q[NPRIM] = {0}, uc[NCONS];
-        g_problem->prim(x, y, q);
-        if (g_problem->direct_b) {
-            q[QBX] = 0.5 * (g_problem->Bx_face(x - 0.5*dx0, y) + g_problem->Bx_face(x + 0.5*dx0, y));
-            q[QBY] = 0.5 * (g_problem->By_face(x, y - 0.5*dx1) + g_problem->By_face(x, y + 0.5*dx1));
+        const Real dx0 = geom.CellSize(0), dx1 = geom.CellSize(1);
+        const Real x = geom.ProbLo(0) + (Real(iv[0]) + Real(0.5))*dx0;
+        const Real y = geom.ProbLo(1) + (Real(iv[1]) + Real(0.5))*dx1;
+        Real q[NPRIM] = {}, uc[NCONS];
+        problem.prim(x, y, q);
+        if (problem.direct_b()) {
+            q[QBX] = Real(0.5)*(problem.bx_face(x-Real(0.5)*dx0,y)+problem.bx_face(x+Real(0.5)*dx0,y));
+            q[QBY] = Real(0.5)*(problem.by_face(x,y-Real(0.5)*dx1)+problem.by_face(x,y+Real(0.5)*dx1));
         } else {
-            q[QBX] =  (g_problem->Az(x, y + 0.5*dx1) - g_problem->Az(x, y - 0.5*dx1)) / dx1;
-            q[QBY] = -(g_problem->Az(x + 0.5*dx0, y) - g_problem->Az(x - 0.5*dx0, y)) / dx0;
+            q[QBX] = (problem.az(x,y+Real(0.5)*dx1)-problem.az(x,y-Real(0.5)*dx1))/dx1;
+            q[QBY] =-(problem.az(x+Real(0.5)*dx0,y)-problem.az(x-Real(0.5)*dx0,y))/dx0;
         }
-        prim_to_cons(q, uc, g_gamma);
-        // Заполняем запрошенный диапазон компонент; в этом коде FillPatch
-        // всегда вызывается на всех NCONS компонентах сразу (dcomp = 0).
-        for (int n = 0; n < numcomp && (dcomp + n) < NCONS; ++n)
-            arr(i, j, k, dcomp + n) = uc[dcomp + n];
-    });
-}
+        prim_to_cons(q, uc, gamma);
+        for (int n = 0; n < numcomp && dcomp+n < NCONS; ++n) arr(iv,dcomp+n) = uc[dcomp+n];
+    }
+};
 
 int bc_code_for(BcType t, int comp, int dim)
 {
@@ -161,9 +150,6 @@ MhdAmr::MhdAmr(const SimConfig& cfg)
     : AmrCore(make_level0_geometry(cfg), make_amr_info(cfg)),
       cfg_(cfg), prob_(make_problem(cfg))
 {
-    g_problem = &prob_;
-    g_gamma   = cfg.gamma;
-
     const int nlev = max_level + 1;
     state_.resize(nlev);  state0_.resize(nlev);
     bface_.resize(nlev);  bface0_.resize(nlev);
@@ -213,22 +199,22 @@ void MhdAmr::InitLevelData(int lev)
     BL_PROFILE("MhdAmr::InitLevelData");
     const auto problo = Geom(lev).ProbLoArray();
     const auto dx     = Geom(lev).CellSizeArray();
-    const Problem& P  = prob_;
-    const double gam  = cfg_.gamma;
+    const DeviceProblem P = prob_;
+    const Real gam  = cfg_.gamma;
 
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         for (MFIter mfi(bface_[lev][d]); mfi.isValid(); ++mfi) {
             const Box& bx = mfi.fabbox();      // вместе с фантомами
             auto b = bface_[lev][d].array(mfi);
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-                const double xf = problo[0] + i * dx[0] + (d == 0 ? 0.0 : 0.5*dx[0]);
-                const double yf = problo[1] + j * dx[1] + (d == 1 ? 0.0 : 0.5*dx[1]);
-                if (P.direct_b) {
-                    b(i,j,k) = (d == 0) ? P.Bx_face(xf, yf) : P.By_face(xf, yf);
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                const Real xf = problo[0] + i * dx[0] + (d == 0 ? Real(0.0) : Real(0.5)*dx[0]);
+                const Real yf = problo[1] + j * dx[1] + (d == 1 ? Real(0.0) : Real(0.5)*dx[1]);
+                if (P.direct_b()) {
+                    b(i,j,k) = (d == 0) ? P.bx_face(xf, yf) : P.by_face(xf, yf);
                 } else if (d == 0) {
-                    b(i,j,k) =  (P.Az(xf, yf + 0.5*dx[1]) - P.Az(xf, yf - 0.5*dx[1])) / dx[1];
+                    b(i,j,k) =  (P.az(xf, yf + Real(0.5)*dx[1]) - P.az(xf, yf - Real(0.5)*dx[1])) / dx[1];
                 } else {
-                    b(i,j,k) = -(P.Az(xf + 0.5*dx[0], yf) - P.Az(xf - 0.5*dx[0], yf)) / dx[0];
+                    b(i,j,k) = -(P.az(xf + Real(0.5)*dx[0], yf) - P.az(xf - Real(0.5)*dx[0], yf)) / dx[0];
                 }
             });
         }
@@ -238,13 +224,13 @@ void MhdAmr::InitLevelData(int lev)
         auto u   = state_[lev].array(mfi);
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-            const double x = problo[0] + (i + 0.5) * dx[0];
-            const double y = problo[1] + (j + 0.5) * dx[1];
-            double q[NPRIM] = {0}, uc[NCONS];
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            const Real x = problo[0] + (Real(i) + Real(0.5)) * dx[0];
+            const Real y = problo[1] + (Real(j) + Real(0.5)) * dx[1];
+            Real q[NPRIM] = {}, uc[NCONS];
             P.prim(x, y, q);
-            q[QBX] = 0.5 * (bxf(i,j,k) + bxf(i+1,j,k));
-            q[QBY] = 0.5 * (byf(i,j,k) + byf(i,j+1,k));
+            q[QBX] = Real(0.5) * (bxf(i,j,k) + bxf(i+1,j,k));
+            q[QBY] = Real(0.5) * (byf(i,j,k) + byf(i,j+1,k));
             prim_to_cons(q, uc, gam);
             for (int n = 0; n < NCONS; ++n) u(i,j,k,n) = uc[n];
         });
@@ -272,7 +258,7 @@ void MhdAmr::SyncCellBAfterRegrid(int lev)
         const Box& bx = mfi.validbox();
         auto u = state_[lev].const_array(mfi);
         auto m = me_before.array(mfi);
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             m(i,j,k) = Real(0.5) * (u(i,j,k,UBX)*u(i,j,k,UBX)
                                   + u(i,j,k,UBY)*u(i,j,k,UBY)
                                   + u(i,j,k,UBZ)*u(i,j,k,UBZ));
@@ -283,7 +269,7 @@ void MhdAmr::SyncCellBAfterRegrid(int lev)
         const Box& bx = mfi.validbox();
         auto u = state_[lev].array(mfi);
         auto m = me_before.const_array(mfi);
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             const Real me_after = Real(0.5) * (u(i,j,k,UBX)*u(i,j,k,UBX)
                                              + u(i,j,k,UBY)*u(i,j,k,UBY)
                                              + u(i,j,k,UBZ)*u(i,j,k,UBZ));
@@ -305,8 +291,9 @@ void MhdAmr::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray& ba,
     AllocLevel(lev, ba, dm);
     // Клеточные величины — консервативная интерполяция с грубого уровня
     {
-        PhysBCFunct<CpuBndryFuncFab> cbc(Geom(lev-1), bcrec_, CpuBndryFuncFab(ext_dir_fill));
-        PhysBCFunct<CpuBndryFuncFab> fbc(Geom(lev),   bcrec_, CpuBndryFuncFab(ext_dir_fill));
+        const ExtDirGpuFill fill {prob_, cfg_.gamma};
+        PhysBCFunct<GpuBndryFuncFab<ExtDirGpuFill>> cbc(Geom(lev-1), bcrec_, GpuBndryFuncFab<ExtDirGpuFill>(fill));
+        PhysBCFunct<GpuBndryFuncFab<ExtDirGpuFill>> fbc(Geom(lev),   bcrec_, GpuBndryFuncFab<ExtDirGpuFill>(fill));
         amrex::InterpFromCoarseLevel(state_[lev], time, state_[lev-1], 0, 0, NCONS,
                                      Geom(lev-1), Geom(lev), cbc, 0, fbc, 0,
                                      refRatio(lev-1), &cell_cons_interp, bcrec_, 0);
@@ -367,7 +354,7 @@ void MhdAmr::ErrorEst(int lev, TagBoxArray& tags, Real /*time*/, int /*ngrow*/)
         const Box& bx = mfi.tilebox();
         auto u   = tmp.const_array(mfi);
         auto tag = tags.array(mfi);
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             const Real r  = u(i,j,k,URHO);
             const Real gx = std::abs(u(i+1,j,k,URHO) - u(i-1,j,k,URHO));
             const Real gy = std::abs(u(i,j+1,k,URHO) - u(i,j-1,k,URHO));
@@ -389,12 +376,13 @@ void MhdAmr::ErrorEst(int lev, TagBoxArray& tags, Real /*time*/, int /*ngrow*/)
 void MhdAmr::FillPatchCells(int lev, MultiFab& mf, Real time)
 {
     BL_PROFILE("MhdAmr::FillPatchCells");
-    PhysBCFunct<CpuBndryFuncFab> fbc(Geom(lev), bcrec_, CpuBndryFuncFab(ext_dir_fill));
+    const ExtDirGpuFill fill {prob_, cfg_.gamma};
+    PhysBCFunct<GpuBndryFuncFab<ExtDirGpuFill>> fbc(Geom(lev), bcrec_, GpuBndryFuncFab<ExtDirGpuFill>(fill));
     if (lev == 0) {
         amrex::FillPatchSingleLevel(mf, time, {&state_[0]}, {time}, 0, 0, NCONS,
                                     Geom(0), fbc, 0);
     } else {
-        PhysBCFunct<CpuBndryFuncFab> cbc(Geom(lev-1), bcrec_, CpuBndryFuncFab(ext_dir_fill));
+        PhysBCFunct<GpuBndryFuncFab<ExtDirGpuFill>> cbc(Geom(lev-1), bcrec_, GpuBndryFuncFab<ExtDirGpuFill>(fill));
         amrex::FillPatchTwoLevels(mf, time,
                                   {&state_[lev-1]}, {time}, {&state_[lev]}, {time},
                                   0, 0, NCONS, Geom(lev-1), Geom(lev),
@@ -437,9 +425,9 @@ void MhdAmr::FillPhysicalFaceBoundary(int lev)
     const Box& domain = Geom(lev).Domain();
     const auto problo = Geom(lev).ProbLoArray();
     const auto dx     = Geom(lev).CellSizeArray();
-    const BcType lo[2] = { cfg_.bc_xlo, cfg_.bc_ylo };
-    const BcType hi[2] = { cfg_.bc_xhi, cfg_.bc_yhi };
-    const Problem& P = prob_;
+    const int lo0 = static_cast<int>(cfg_.bc_xlo), lo1 = static_cast<int>(cfg_.bc_ylo);
+    const int hi0 = static_cast<int>(cfg_.bc_xhi), hi1 = static_cast<int>(cfg_.bc_yhi);
+    const DeviceProblem P = prob_;
 
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         bface_[lev][d].FillBoundary(Geom(lev).periodicity());
@@ -447,36 +435,37 @@ void MhdAmr::FillPhysicalFaceBoundary(int lev)
         for (MFIter mfi(bface_[lev][d]); mfi.isValid(); ++mfi) {
             const Box& fb = mfi.fabbox();
             auto b = bface_[lev][d].array(mfi);
-            amrex::LoopOnCpu(fb, [&] (int i, int j, int k) {
-                IntVect iv(AMREX_D_DECL(i, j, k));
+            amrex::ParallelFor(fb, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
                 for (int dim = 0; dim < AMREX_SPACEDIM; ++dim) {
                     const int dlo = fdomain.smallEnd(dim), dhi = fdomain.bigEnd(dim);
                     BcType bt;
-                    if      (iv[dim] < dlo) bt = lo[dim];
-                    else if (iv[dim] > dhi) bt = hi[dim];
+                    const int idx = (dim == 0) ? i : j;
+                    if      (idx < dlo) bt = static_cast<BcType>((dim == 0) ? lo0 : lo1);
+                    else if (idx > dhi) bt = static_cast<BcType>((dim == 0) ? hi0 : hi1);
                     else continue;
                     if (bt == BcType::Periodic) continue;
                     if (bt == BcType::Outflow) {
-                        IntVect src = iv;
-                        src[dim] = std::clamp(iv[dim], dlo, dhi);
-                        b(i,j,k) = b(src[0], src[1], 0);
+                        const int si = (dim == 0) ? ((i < dlo) ? dlo : ((i > dhi) ? dhi : i)) : i;
+                        const int sj = (dim == 1) ? ((j < dlo) ? dlo : ((j > dhi) ? dhi : j)) : j;
+                        b(i,j,k) = b(si,sj,0);
                     } else if (bt == BcType::Reflect) {
                         // нормальная к границе компонента — нечётная,
                         // касательная — чётная (зеркальное отражение поля)
                         const bool normal = (dim == d);
-                        IntVect src = iv;
-                        if (normal) src[dim] = (iv[dim] < dlo) ? 2*dlo - iv[dim] : 2*dhi - iv[dim];
-                        else        src[dim] = (iv[dim] < dlo) ? 2*dlo - iv[dim] - 1 : 2*dhi - iv[dim] + 1;
-                        b(i,j,k) = (normal ? -1.0 : 1.0) * b(src[0], src[1], 0);
+                        int si = i, sj = j;
+                        const int src = normal ? ((idx < dlo) ? 2*dlo-idx : 2*dhi-idx)
+                                               : ((idx < dlo) ? 2*dlo-idx-1 : 2*dhi-idx+1);
+                        if (dim == 0) si = src; else sj = src;
+                        b(i,j,k) = (normal ? Real(-1.0) : Real(1.0)) * b(si,sj,0);
                     } else {  // Dirichlet: «исторические» значения из НУ
-                        const double xf = problo[0] + i * dx[0] + (d == 0 ? 0.0 : 0.5*dx[0]);
-                        const double yf = problo[1] + j * dx[1] + (d == 1 ? 0.0 : 0.5*dx[1]);
-                        if (P.direct_b) {
-                            b(i,j,k) = (d == 0) ? P.Bx_face(xf, yf) : P.By_face(xf, yf);
+                        const Real xf = problo[0] + i * dx[0] + (d == 0 ? Real(0) : Real(0.5)*dx[0]);
+                        const Real yf = problo[1] + j * dx[1] + (d == 1 ? Real(0) : Real(0.5)*dx[1]);
+                        if (P.direct_b()) {
+                            b(i,j,k) = (d == 0) ? P.bx_face(xf, yf) : P.by_face(xf, yf);
                         } else if (d == 0) {
-                            b(i,j,k) =  (P.Az(xf, yf+0.5*dx[1]) - P.Az(xf, yf-0.5*dx[1])) / dx[1];
+                            b(i,j,k) =  (P.az(xf, yf+Real(0.5)*dx[1]) - P.az(xf, yf-Real(0.5)*dx[1])) / dx[1];
                         } else {
-                            b(i,j,k) = -(P.Az(xf+0.5*dx[0], yf) - P.Az(xf-0.5*dx[0], yf)) / dx[0];
+                            b(i,j,k) = -(P.az(xf+Real(0.5)*dx[0], yf) - P.az(xf-Real(0.5)*dx[0], yf)) / dx[0];
                         }
                     }
                     break;
@@ -496,7 +485,7 @@ void MhdAmr::SyncCellB(int lev)
         auto u   = state_[lev].array(mfi);
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             u(i,j,k,UBX) = 0.5 * (bxf(i,j,k) + bxf(i+1,j,k));
             u(i,j,k,UBY) = 0.5 * (byf(i,j,k) + byf(i,j+1,k));
         });
@@ -511,16 +500,21 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
     BL_PROFILE("MhdAmr::ComputeFluxesAndEmf");
     const Limiter lim = cfg_.limiter;
     const EmfAveraging emode = cfg_.emf;
-    const double gam = cfg_.gamma;
+    const Real gam = cfg_.gamma;
 
-    amrex::Long level_fallbacks = 0;
-    amrex::Long level_floors = 0;
+    // DeviceScalar is device-resident on CUDA and ordinary host storage on CPU.
+    // HostDevice atomics preserve the diagnostic invariant in both execution spaces:
+    // on device they are real atomics, on host `#pragma omp atomic update`. Именно
+    // поэтому OpenMP-распараллеливание по тайлам ниже безопасно для счётчиков --
+    // ради него прежняя версия и держала здесь reduction(+:...).
+    Gpu::DeviceScalar<Long> level_fallbacks(0);
+    Gpu::DeviceScalar<Long> level_floors(0);
+    Long* const fallback_counter = level_fallbacks.dataPtr();
+    Long* const floor_counter = level_floors.dataPtr();
 #ifdef AMREX_USE_OMP
-#pragma omp parallel reduction(+:level_fallbacks) reduction(+:level_floors)
+#pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
     for (MFIter mfi(state_[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-        int fb = 0;   // срабатывания HLLD→HLL на данном тайле (LoopOnCpu — серийный)
-        int fl = 0;   // срабатывания пола ρ/p при переводе в примитивы (NEW-003)
         auto u   = state_[lev].const_array(mfi);
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
@@ -529,48 +523,56 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
         auto ez  = emf_[lev].array(mfi);
 
         // примитивы в ячейке (i,j) по запросу
-        auto qprim = [=, &fl] (int i, int j, double* q) {
-            double uc[NCONS];
+        auto qprim = [=] AMREX_GPU_DEVICE (int i, int j, Real* q) noexcept -> int {
+            Real uc[NCONS];
             for (int n = 0; n < NCONS; ++n) uc[n] = u(i, j, 0, n);
-            cons_to_prim(uc, q, gam, Limits{}, &fl);
+            int floors = 0;
+            cons_to_prim(uc, q, gam, Limits{}, &floors);
+            return floors;
         };
 
         // --- x-потоки: грани валидной области + 1 слой (нужно узловым ЭДС) --
         {
             const Box xbx = mfi.grownnodaltilebox(0, 1);
-            amrex::LoopOnCpu(xbx, [&] (int i, int j, int k) {
-                double qm[NPRIM], q0[NPRIM], qp[NPRIM], qq[NPRIM];
-                double qL[NPRIM], qR[NPRIM], f[NCONS];
-                qprim(i-2, j, qm); qprim(i-1, j, q0); qprim(i, j, qp); qprim(i+1, j, qq);
+            amrex::For(xbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                Real qm[NPRIM], q0[NPRIM], qp[NPRIM], qq[NPRIM];
+                Real qL[NPRIM], qR[NPRIM], f[NCONS];
+                int floors = qprim(i-2,j,qm)+qprim(i-1,j,q0)+qprim(i,j,qp)+qprim(i+1,j,qq);
                 for (int n = 0; n < NPRIM; ++n) {
                     qL[n] = face_value_plus (qm[n], q0[n], qp[n], lim);
                     qR[n] = face_value_minus(q0[n], qp[n], qq[n], lim);
                 }
-                hlld_flux(qL, qR, bxf(i,j,k), f, gam, Limits{}, &fb);   // Bn — из staggered-массива!
+                int fallback = 0;
+                hlld_flux(qL, qR, bxf(i,j,k), f, gam, Limits{}, &fallback);
                 for (int n = 0; n < NCONS; ++n) fx(i,j,k,n) = f[n];
+                if (fallback) HostDevice::Atomic::Add(fallback_counter, Long(fallback));
+                if (floors) HostDevice::Atomic::Add(floor_counter, Long(floors));
             });
         }
         // --- y-потоки: локальный поворот осей (u'=v, v'=−u, Bx'=By, By'=−Bx) -
         {
             const Box ybx = mfi.grownnodaltilebox(1, 1);
-            amrex::LoopOnCpu(ybx, [&] (int i, int j, int k) {
-                double qm[NPRIM], q0[NPRIM], qp[NPRIM], qq[NPRIM];
-                double qL[NPRIM], qR[NPRIM], rL[NPRIM], rR[NPRIM], f[NCONS];
-                qprim(i, j-2, qm); qprim(i, j-1, q0); qprim(i, j, qp); qprim(i, j+1, qq);
+            amrex::For(ybx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                Real qm[NPRIM], q0[NPRIM], qp[NPRIM], qq[NPRIM];
+                Real qL[NPRIM], qR[NPRIM], rL[NPRIM], rR[NPRIM], f[NCONS];
+                int floors = qprim(i,j-2,qm)+qprim(i,j-1,q0)+qprim(i,j,qp)+qprim(i,j+1,qq);
                 for (int n = 0; n < NPRIM; ++n) {
                     qL[n] = face_value_plus (qm[n], q0[n], qp[n], lim);
                     qR[n] = face_value_minus(q0[n], qp[n], qq[n], lim);
                 }
-                auto rot = [] (const double* q, double* r) {
+                auto rot = [] AMREX_GPU_DEVICE (const Real* q, Real* r) noexcept {
                     r[QRHO]=q[QRHO]; r[QP]=q[QP]; r[QW]=q[QW]; r[QBZ]=q[QBZ];
                     r[QU]=q[QV]; r[QV]=-q[QU]; r[QBX]=q[QBY]; r[QBY]=-q[QBX];
                 };
                 rot(qL, rL); rot(qR, rR);
-                hlld_flux(rL, rR, byf(i,j,k), f, gam, Limits{}, &fb);
+                int fallback = 0;
+                hlld_flux(rL, rR, byf(i,j,k), f, gam, Limits{}, &fallback);
                 fy(i,j,k,URHO)=f[URHO]; fy(i,j,k,UENE)=f[UENE];
                 fy(i,j,k,UMZ)=f[UMZ];   fy(i,j,k,UBZ)=f[UBZ];
                 fy(i,j,k,UMX)=-f[UMY];  fy(i,j,k,UMY)=f[UMX];
                 fy(i,j,k,UBX)=-f[UBY];  fy(i,j,k,UBY)=f[UBX];   // fy[UBX] = +Ez
+                if (fallback) HostDevice::Atomic::Add(fallback_counter, Long(fallback));
+                if (floors) HostDevice::Atomic::Add(floor_counter, Long(floors));
             });
         }
         // --- узловые ЭДС Ez(i−1/2, j−1/2): усреднение ЭДС примыкающих граней —
@@ -579,21 +581,20 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
         // ЭДС на x-грани: Ez = −Fx[UBY]; на y-грани: Ez = +Fy[UBX].
         {
             const Box nbx = mfi.tilebox(IntVect::TheNodeVector());
-            amrex::LoopOnCpu(nbx, [&] (int i, int j, int k) {
-                double qmm[NPRIM], qpm[NPRIM], qmp[NPRIM], qpp[NPRIM];
-                qprim(i-1, j-1, qmm); qprim(i, j-1, qpm);
-                qprim(i-1, j,   qmp); qprim(i, j,   qpp);
+            amrex::For(nbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                Real qmm[NPRIM], qpm[NPRIM], qmp[NPRIM], qpp[NPRIM];
+                const int floors = qprim(i-1,j-1,qmm)+qprim(i,j-1,qpm)
+                                 + qprim(i-1,j,qmp)+qprim(i,j,qpp);
                 ez(i,j,k) = corner_emf(-fx(i, j-1, k, UBY), -fx(i, j, k, UBY),
                                         fy(i-1, j, k, UBX),  fy(i, j, k, UBX),
                                         cell_emf_z(qmm), cell_emf_z(qpm),
                                         cell_emf_z(qmp), cell_emf_z(qpp), emode);
+                if (floors) HostDevice::Atomic::Add(floor_counter, Long(floors));
             });
         }
-        level_fallbacks += fb;
-        level_floors += fl;
     }
-    hlld_fallbacks_ += level_fallbacks;
-    floor_events_   += level_floors;
+    hlld_fallbacks_ += level_fallbacks.dataValue();
+    floor_events_   += level_floors.dataValue();
 }
 
 // Число ячеек с ρ ≤ small_rho либо p ≤ small_pres на всей иерархии (после
@@ -602,20 +603,22 @@ void MhdAmr::ComputeFluxesAndEmf(int lev)
 amrex::Long MhdAmr::CountNonPositiveCells() const
 {
     const Limits lim;
-    amrex::Long n = 0;
+    Gpu::DeviceScalar<Long> counter(0);
+    Long* const count = counter.dataPtr();
     for (int lev = 0; lev <= finest_level; ++lev) {
         for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
             const Box& bx = mfi.validbox();
             auto u = state_[lev].const_array(mfi);
-            const double gam = cfg_.gamma;
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-                double uc[NCONS];
+            const Real gam = cfg_.gamma;
+            amrex::For(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                Real uc[NCONS];
                 for (int c = 0; c < NCONS; ++c) uc[c] = u(i,j,k,c);
                 if (!(uc[URHO] > lim.small_rho) ||
-                    !(pressure_from_cons(uc, gam) > lim.small_pres)) ++n;
+                    !(pressure_from_cons(uc, gam) > lim.small_pres)) HostDevice::Atomic::Add(count, Long(1));
             });
         }
     }
+    amrex::Long n = counter.dataValue();
     ParallelDescriptor::ReduceLongSum(n);
     return n;
 }
@@ -644,7 +647,7 @@ void MhdAmr::ApplyUpdates(int lev, Real dt)
     const Real lx = dt / dx[0], ly = dt / dx[1];
 
 #ifdef AMREX_USE_OMP
-#pragma omp parallel
+#pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
     {
         // Газовые величины: годуновский баланс потоков (ур. (1)–(3) статьи)
@@ -653,7 +656,7 @@ void MhdAmr::ApplyUpdates(int lev, Real dt)
             auto u  = state_[lev].array(mfi);
             auto fx = flux_[lev][0].const_array(mfi);
             auto fy = flux_[lev][1].const_array(mfi);
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
                 for (int n = 0; n < NCONS; ++n) {
                     if (n == UBX || n == UBY) continue;   // плоскостное B — через CT
                     u(i,j,k,n) -= lx * (fx(i+1,j,k,n) - fx(i,j,k,n))
@@ -668,7 +671,7 @@ void MhdAmr::ApplyUpdates(int lev, Real dt)
             const Box& fb = mfi.validbox();
             auto b  = bface_[lev][0].array(mfi);
             auto ez = emf_[lev].const_array(mfi);
-            amrex::LoopOnCpu(fb, [&] (int i, int j, int k) {
+            amrex::ParallelFor(fb, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
                 b(i,j,k) -= ly * (ez(i, j+1, k) - ez(i, j, k));
             });
         }
@@ -676,7 +679,7 @@ void MhdAmr::ApplyUpdates(int lev, Real dt)
             const Box& fb = mfi.validbox();
             auto b  = bface_[lev][1].array(mfi);
             auto ez = emf_[lev].const_array(mfi);
-            amrex::LoopOnCpu(fb, [&] (int i, int j, int k) {
+            amrex::ParallelFor(fb, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
                 b(i,j,k) += lx * (ez(i+1, j, k) - ez(i, j, k));
             });
         }
@@ -694,16 +697,22 @@ Real MhdAmr::ComputeDt() const
         for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
             const Box& bx = mfi.validbox();
             auto u = state_[lev].const_array(mfi);
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-                double uc[NCONS], q[NPRIM];
+            const Real gam = cfg_.gamma;
+            ReduceOps<ReduceOpMin> reduce_op;
+            ReduceData<Real> reduce_data(reduce_op);
+            using ReduceTuple = ReduceData<Real>::Type;
+            reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
+                Real uc[NCONS], q[NPRIM];
                 for (int n = 0; n < NCONS; ++n) uc[n] = u(i,j,k,n);
-                cons_to_prim(uc, q, cfg_.gamma);
-                const double B2 = q[QBX]*q[QBX] + q[QBY]*q[QBY] + q[QBZ]*q[QBZ];
-                const double cfx = fast_speed(q[QRHO], q[QP], q[QBX], B2, cfg_.gamma);
-                const double cfy = fast_speed(q[QRHO], q[QP], q[QBY], B2, cfg_.gamma);
-                dt = std::min(dt, Real(dx[0] / (std::abs(q[QU]) + cfx)));
-                dt = std::min(dt, Real(dx[1] / (std::abs(q[QV]) + cfy)));
+                cons_to_prim(uc, q, gam);
+                const Real B2 = q[QBX]*q[QBX] + q[QBY]*q[QBY] + q[QBZ]*q[QBZ];
+                const Real cfx = fast_speed(q[QRHO], q[QP], q[QBX], B2, gam);
+                const Real cfy = fast_speed(q[QRHO], q[QP], q[QBY], B2, gam);
+                const Real dtx = dx[0] / (std::abs(q[QU]) + cfx);
+                const Real dty = dx[1] / (std::abs(q[QV]) + cfy);
+                return { dtx < dty ? dtx : dty };
             });
+            dt = std::min(dt, amrex::get<0>(reduce_data.value(reduce_op)));
         }
     }
     ParallelDescriptor::ReduceRealMin(dt);
@@ -718,11 +727,15 @@ Real MhdAmr::MaxDivB(int lev) const
         const Box& bx = mfi.validbox();
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
+        ReduceOps<ReduceOpMax> reduce_op;
+        ReduceData<Real> reduce_data(reduce_op);
+        using ReduceTuple = ReduceData<Real>::Type;
+        reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
             const Real d = (bxf(i+1,j,k) - bxf(i,j,k)) / dx[0]
                          + (byf(i,j+1,k) - byf(i,j,k)) / dx[1];
-            m = std::max(m, std::abs(d));
+            return { std::abs(d) };
         });
+        m = std::max(m, amrex::get<0>(reduce_data.value(reduce_op)));
     }
     ParallelDescriptor::ReduceRealMax(m);
     return m;
@@ -787,6 +800,11 @@ void MhdAmr::AccumulateFluxRegisters(Real dt)
     BL_PROFILE("MhdAmr::AccumulateFluxRegisters");
     for (int lev = 1; lev <= finest_level; ++lev) flux_reg_[lev]->reset();
 
+#if defined(AMREX_USE_GPU)
+    constexpr RunOn flux_register_run_on = RunOn::Gpu;
+#else
+    constexpr RunOn flux_register_run_on = RunOn::Cpu;
+#endif
     for (int lev = 0; lev <= finest_level; ++lev) {
         const auto dxa = Geom(lev).CellSizeArray();
         const Real dx[AMREX_SPACEDIM] = {AMREX_D_DECL(dxa[0], dxa[1], dxa[2])};
@@ -796,9 +814,9 @@ void MhdAmr::AccumulateFluxRegisters(Real dt)
             const std::array<FArrayBox const*, AMREX_SPACEDIM> f
                 {AMREX_D_DECL(&flux_[lev][0][mfi], &flux_[lev][1][mfi], &flux_[lev][2][mfi])};
             if (lev < finest_level)
-                flux_reg_[lev+1]->CrseAdd(mfi, f, dx, dt, RunOn::Cpu);
+                flux_reg_[lev+1]->CrseAdd(mfi, f, dx, dt, flux_register_run_on);
             if (lev > 0)
-                flux_reg_[lev]->FineAdd(mfi, f, dx, dt, RunOn::Cpu);
+                flux_reg_[lev]->FineAdd(mfi, f, dx, dt, flux_register_run_on);
         }
     }
 }
@@ -836,8 +854,11 @@ amrex::Real MhdAmr::TotalEnergyPart(int which) const
             auto u = state_[lev].const_array(mfi);
             Array4<const int> cov{};
             if (has_finer) cov = covered.const_array(mfi);
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-                if (has_finer && cov(i,j,k)) return;
+            ReduceOps<ReduceOpSum> reduce_op;
+            ReduceData<Real> reduce_data(reduce_op);
+            using ReduceTuple = ReduceData<Real>::Type;
+            reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
+                if (has_finer && cov(i,j,k)) return { Real(0.0) };
                 const Real rho = u(i,j,k,URHO);
                 const Real me = Real(0.5) * (u(i,j,k,UBX)*u(i,j,k,UBX)
                                            + u(i,j,k,UBY)*u(i,j,k,UBY)
@@ -845,8 +866,9 @@ amrex::Real MhdAmr::TotalEnergyPart(int which) const
                 const Real ke = Real(0.5) * (u(i,j,k,UMX)*u(i,j,k,UMX)
                                            + u(i,j,k,UMY)*u(i,j,k,UMY)
                                            + u(i,j,k,UMZ)*u(i,j,k,UMZ)) / rho;
-                sum += (which == 0) ? me : (u(i,j,k,UENE) - ke - me);
+                return { (which == 0) ? me : (u(i,j,k,UENE) - ke - me) };
             });
+            sum += amrex::get<0>(reduce_data.value(reduce_op));
         }
         total += sum * dv;
     }
@@ -872,16 +894,24 @@ void MhdAmr::PrintStateRanges() const
             auto u = state_[lev].const_array(mfi);
             Array4<const int> cov{};
             if (has_finer) cov = covered.const_array(mfi);
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-                if (has_finer && cov(i,j,k)) return;      // представлен мелким уровнем
-                double uc[NCONS], q[NPRIM];
+            const Real gam = cfg_.gamma;
+            const Real hi_identity = -std::numeric_limits<Real>::max();
+            const Real lo_identity = std::numeric_limits<Real>::max();
+            ReduceOps<ReduceOpMin,ReduceOpMax,ReduceOpMin,ReduceOpMax> reduce_op;
+            ReduceData<Real,Real,Real,Real> reduce_data(reduce_op);
+            using ReduceTuple = ReduceData<Real,Real,Real,Real>::Type;
+            reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
+                if (has_finer && cov(i,j,k)) return {lo_identity,hi_identity,lo_identity,hi_identity};
+                Real uc[NCONS], q[NPRIM];
                 for (int n = 0; n < NCONS; ++n) uc[n] = u(i,j,k,n);
-                cons_to_prim(uc, q, cfg_.gamma);
-                rho_lo = std::min(rho_lo, Real(q[QRHO]));
-                rho_hi = std::max(rho_hi, Real(q[QRHO]));
-                p_lo   = std::min(p_lo,   Real(q[QP]));
-                p_hi   = std::max(p_hi,   Real(q[QP]));
+                cons_to_prim(uc, q, gam);
+                return {q[QRHO],q[QRHO],q[QP],q[QP]};
             });
+            const auto values = reduce_data.value(reduce_op);
+            rho_lo = std::min(rho_lo, amrex::get<0>(values));
+            rho_hi = std::max(rho_hi, amrex::get<1>(values));
+            p_lo   = std::min(p_lo,   amrex::get<2>(values));
+            p_hi   = std::max(p_hi,   amrex::get<3>(values));
         }
     }
     ParallelDescriptor::ReduceRealMin(rho_lo);
@@ -973,9 +1003,9 @@ void MhdAmr::WritePlotFile(int step, Real time)
             auto u = state_[lev].const_array(mfi);
             auto bxf = bface_[lev][0].const_array(mfi);
             auto byf = bface_[lev][1].const_array(mfi);
-            const double gam = cfg_.gamma;
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) {
-                double uc[NCONS], q[NPRIM];
+            const Real gam = cfg_.gamma;
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                Real uc[NCONS], q[NPRIM];
                 for (int n = 0; n < NCONS; ++n) uc[n] = u(i,j,k,n);
                 cons_to_prim(uc, q, gam);
                 o(i,j,k,0)=q[QRHO]; o(i,j,k,1)=q[QU]; o(i,j,k,2)=q[QV];

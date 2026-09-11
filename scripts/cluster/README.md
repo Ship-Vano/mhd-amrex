@@ -1,4 +1,57 @@
-# Шаблоны заданий для кластера
+# Кампания на кластере
+
+Основной интерфейс — не старые отдельные шаблоны ниже, а изолированная
+кампания: одна команда создаёт очередь CPU-проверки, strong/weak MPI-замеров и
+`legacy_corrected`. Каждый job получает новый каталог внутри durable storage;
+исходники `mhd-amrex` и закреплённый source legacy остаются только для чтения.
+
+```sh
+cp scripts/cluster/campaign.env.example scripts/cluster/sites/k10.env
+# заполнить scheduler/account/modules/paths; file sites/*.env не коммитится
+scripts/cluster/submit_campaign.sh --site scripts/cluster/sites/k10.env \
+  --legacy-source /path/to/MHD2D --dry-run
+scripts/cluster/submit_campaign.sh --site scripts/cluster/sites/k10.env \
+  --legacy-source /path/to/MHD2D
+```
+
+`--dry-run` обязателен как первый запуск: он показывает точные `sbatch`
+команды, ничего не ставя в очередь. Реальная команда создаёт campaign manifest,
+копию site-конфигурации и ставит пять jobs. Strong/weak MPI и OpenMP jobs
+зависят от успешной CPU CTest-проверки; legacy job независим и сохраняет провал
+как артефакт.
+
+Перед отправкой launcher требует чистый `mhd-amrex` checkout. Каждый job
+сверяет этот же commit и clean-state перед сборкой, поэтому результат не может
+тихо собраться из кода, изменённого после `sbatch`.
+
+Для RTX 4090 добавьте `--cuda-validation` и `MHD_GPU_ARCH=89`. Job собирает
+серийный CPU-reference и CUDA-binary, запускает CUDA CTest (кроме multi-rank
+MPI) и два CPU/GPU parity-case (`uniform_const`, Orszag--Tang). Логи остаются
+в campaign artifact. Это **не** GPU benchmark и не доказательство MPI/GPU
+масштабирования. Подробность: `docs/RP7_GPU_READINESS.md`.
+
+На Ubuntu без SLURM:
+
+```sh
+scripts/cluster/run_ubuntu4090.sh --legacy-source /path/to/MHD2D \
+  --artifact-root /data/mhd-artifacts
+```
+
+Добавьте `--cuda-validation` только после установки совместимого CUDA toolkit.
+Этот gate доказывает лишь single-GPU execution/parity, не GPU measurement. Для
+передачи результатов:
+
+```sh
+scripts/cluster/pack_campaign.sh /data/mhd-artifacts/<campaign-id>
+# или с локальной машины: rsync -a user@host:/data/mhd-artifacts/<campaign-id>/ ./<campaign-id>/
+```
+
+В JSON/log/artifact root остаются также неудачные и выбросные прогоны. Их не
+следует удалять до анализа.
+
+---
+
+# Устаревшие точечные шаблоны
 
 **Статус: не проверены на реальной очереди.** Доступа к кластеру и его
 параметров нет (решение D-005 в `docs/DECISION_REGISTER.md`), поэтому эти

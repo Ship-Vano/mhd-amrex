@@ -1,112 +1,86 @@
-# РП7 — попытка CUDA: докуда дошло и что мешает
+# РП7 / T12 — CUDA-порт AMReX: состояние и первый runtime gate
 
-Дата: 2026-09-08. Критерий приёмки по ТЗ — **задокументированная попытка**
-(успех не обязателен). Ниже: где именно остановилась сборка, что показал аудит
-GPU-безопасности ядер и почему в этой сессии не написано ни строки
-непроверяемого device-кода.
+Дата обновления: 2026-09-08.
 
-## 1. Сборка: где остановилась
+## Что реализовано
 
-Пресет `cuda-release` объявлен в `CMakePresets.json`. Попытка конфигурации на
-рабочей станции:
+`mhd2d` получил отдельный CUDA execution path на AMReX 25.01, не меняющий
+математическую схему HLLD + MUSCL + CT + SSP-RK2.
 
+- Все вычислительные обходы `MultiFab` в `src/MhdAmr.cpp` переведены с
+  `LoopOnCpu` на `amrex::ParallelFor`/`amrex::For`; GPU не использует CPU
+  tile-loop как вычислительный путь.
+- Постановка задачи теперь `DeviceProblem`: trivially-copyable POD, захватываемый
+  device-lambda по значению. `std::function` и захват `this` из GPU-пути
+  исключены.
+- Физические `ext_dir`-границы работают через `GpuBndryFuncFab<ExtDirGpuFill>`.
+- Счётчики HLLD→HLL и срабатывания floor собираются атомарно в
+  `Gpu::DeviceScalar`; `ComputeDt`, `MaxDivB`, энергия и диапазоны используют
+  `ReduceOps` вместо ссылок на host accumulator.
+- Gas-flux reflux при AMR выбирает `RunOn::Gpu` в GPU-сборке. CT и порядок
+  стадий сохранены.
+- CMake вызывает `setup_target_for_cuda_compilation(mhd2d)` только для
+  `AMReX_GPU_BACKEND=CUDA`; preset `cuda-release` выставляет
+  `CMAKE_CUDA_ARCHITECTURES=89` для RTX 4090 и отключает CUDA fast math для
+  осмысленного первого CPU/GPU parity gate.
+
+Архитектурный тест `arch.gpu_portability` выполняется даже на CPU-host: он
+ловит возвращение `LoopOnCpu`, `std::function` в problem data, потерю GPU
+boundary functor, device counters/reductions или CUDA setup. Это статический
+gate, не доказательство запуска на GPU.
+
+## Что уже проверено локально
+
+CPU Release пересобран после переноса. Пройдены:
+
+```text
+solver.compute_only
+canonical.constant_state
+arch.gpu_portability
 ```
-$ cmake --preset cuda-release
-...
---    AMReX_GPU_BACKEND = CUDA
---    AMReX_GPU_MAX_THREADS = 256
---    AMReX_GPU_RDC
-CMake Error at .../CMakeCUDAFindToolkit.cmake:104 (message):
-  Failed to find nvcc.
-  Compiler requires the CUDA toolkit.  Please set the CUDAToolkit_ROOT variable.
-Call Stack (most recent call first):
-  .../CMakeDetermineCUDACompiler.cmake:109 (cmake_cuda_find_toolkit)
-  build/cuda-release/_deps/amrex-src/CMakeLists.txt:108 (enable_language)
--- Configuring incomplete, errors occurred!
+
+На рабочей станции Apple Silicon отсутствуют `nvcc` и NVIDIA driver, поэтому
+CUDA compile/run здесь не выполнялся. Из этого не следует ни успешность, ни
+неуспешность CUDA-порта.
+
+## Первый gate на RTX 4090
+
+Нужны CUDA Toolkit 12.x, совместимый NVIDIA driver, CMake, GCC/G++ и Python.
+Сначала выполняется именно correctness gate, затем — performance work:
+
+```sh
+cmake --preset cpu-release && cmake --build --preset cpu-release
+cmake --preset cuda-release && cmake --build --preset cuda-release
+ctest --preset cuda-release -E '^mpi\.decomposition_parity$'
+python3 tests/check_cpu_gpu_parity.py \
+  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
+  --config inputs/uniform_const.json --output-dir benchmarks/raw/cuda/parity-uniform
+python3 tests/check_cpu_gpu_parity.py \
+  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
+  --config inputs/orszag_tang_uniform.json --output-dir benchmarks/raw/cuda/parity-orszag
 ```
 
-Что это означает точно:
+Parity требует совпадения счётчиков (`fallbacks`, `floors`, `nonpositive`) и
+сопоставляет `rho/p` и нормы `div B` с `atol=5e-11`, `rtol=5e-10`. Сырые логи
+двух бинарников записываются в `--output-dir`, чтобы их можно было передать
+анализатору без повторного запуска.
 
-- конфигурация **дошла до** `enable_language(CUDA)` внутри AMReX, то есть сам
-  пресет и набор опций AMReX (`AMReX_GPU_BACKEND=CUDA`, RDC, 256 нитей на блок)
-  приняты и корректны;
-- отказ — на поиске `nvcc`. `which nvcc` и `which nvidia-smi` не находят ничего:
-  машина — Apple Silicon, NVIDIA GPU и CUDA-тулкита нет и быть не может.
+Для Ubuntu есть одна команда, создающая изолированный campaign artifact:
 
-Это внешний блокер (D-008), а не дефект проекта. Разблокируется вместе с
-доступом к кластеру (D-005): нужен узел с NVIDIA GPU и CUDA toolkit.
+```sh
+scripts/cluster/run_ubuntu4090.sh --legacy-source /path/to/MHD2D \
+  --artifact-root /data/mhd-artifacts --cuda-validation
+```
 
-## 2. Аудит GPU-безопасности: что уже готово
+Для SLURM/K10 добавляется `--cuda-validation` к
+`scripts/cluster/submit_campaign.sh`. Job записывает версии `nvcc`, GPU,
+configure/build/CTest и parity logs. Сборки создаются в artifact/scratch;
+source checkout остаётся только для чтения.
 
-**Слой ядер (`src/kernels/`) к device-запуску готов.** Заголовки
-`MhdState.H`, `Hlld.H`, `Reconstruction.H`, `CtUpdate.H` помечены макросом
-`MHD_HD`, который при сборке внутри AMReX разворачивается в
-`AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE`. Зависимостей от AMReX-контейнеров
-нет — это гейтится тестом `arch.kernel_purity` (ADR 0001), который допускает из
-AMReX ровно два заголовка: `AMReX_REAL.H` и `AMReX_GpuQualifiers.H`. Ядра не
-выделяют память, не используют виртуальные вызовы и работают на переданных
-указателях.
+## Чего этот change set не утверждает
 
-**Узловое усреднение ЭДС — самое подозрительное место — оказалось безопасным.**
-ТЗ отдельно указывало на него и на атомарные операции. Аудит
-`MhdAmr::ComputeFluxesAndEmf` (`src/MhdAmr.cpp:582`) показывает:
-
-- цикл по узлам **читает** потоки `fx`, `fy` на четырёх примыкающих гранях и
-  примитивы в четырёх примыкающих ячейках, а **пишет ровно одно значение**
-  `ez(i,j,k)` на узел;
-- накопления (`+=`) в узел нет, значит нет ни гонки, ни нужды в атомарных
-  операциях;
-- разбиение по тайлам делается через `mfi.tilebox(IntVect::TheNodeVector())`,
-  которое не даёт двум тайлам владеть одним узлом; на GPU тайлинг отключается
-  (`TilingIfNotGPU()`), и бокс становится целым узловым боксом.
-
-Порядок между тремя циклами стадии (x-потоки → y-потоки → узловые ЭДС) при
-переносе сохранится: `ParallelFor` в одном потоке CUDA выполняются
-последовательно, а третий цикл читает то, что записали первые два.
-
-**Структура уже написана в расчёте на GPU:** горячие циклы обёрнуты в
-`MFIter(..., TilingIfNotGPU())`, OpenMP-прагмы закрыты `#ifdef AMREX_USE_OMP`.
-
-## 3. Аудит: что придётся переделать
-
-| место | проблема | как чинится |
-|---|---|---|
-| 21 вызов `amrex::LoopOnCpu` в `src/MhdAmr.cpp` | серийный host-цикл; на GPU просто не запустится на устройстве | замена на `amrex::ParallelFor` |
-| `qprim = [=, &fl]` (`MhdAmr.cpp:532`), `hlld_flux(..., &fb)` | счётчики полов и откатов HLLD захвачены **по ссылке на host-переменную**; на устройстве адрес невалиден, а инкремент из тысяч нитей — гонка | device-резидентный скаляр + `Gpu::Atomic::Add`, либо `ReduceOps<ReduceOpSum>` |
-| `*n_floor += 1` в `cons_to_prim` (`MhdState.H:88`) | тот же неатомарный инкремент, но уже внутри слоя ядер | требует решения: атомарность — это AMReX-зависимость, а ADR 0001 её в ядрах запрещает. Вариант без нарушения ADR: ядро пишет **флаг** в выходной аргумент, а суммирование делает вызывающий слой |
-| `dt = std::min(dt, ...)` в `ComputeDt` (`:697`), `m = std::max(...)` в `MaxDivB` (`:721`), суммы и min/max в диагностике (`:839`, `:875`) | редукции через захват host-переменной по ссылке | `amrex::ReduceOps` / `ReduceData` |
-| `std::isfinite` (`Hlld.H:253`), `std::clamp` (`MhdAmr.cpp:461`) | в device-коде CUDA переносимость не гарантирована | `amrex::Math::` и явные min/max |
-
-Отдельно: счётчики полов и откатов — не украшение, а часть инвариантов проекта
-(NEW-003, гейт T04): тесты падают, если откат сработал на гладкой задаче.
-Поэтому при переносе их **нельзя просто выбросить** на GPU-пути — иначе
-GPU-сборка тихо потеряет диагностику, которой доверяют CPU-тесты. Это
-единственный пункт, где перенос требует именно проектного решения, а не
-механической замены цикла.
-
-## 4. Почему здесь не написан device-код
-
-Написать замену `LoopOnCpu` → `ParallelFor` и атомарные счётчики можно и без
-GPU. Скомпилировать, запустить и сверить с CPU — нельзя: нет `nvcc`. Непроверенный
-device-код в репозитории хуже его отсутствия: он выглядит как готовый порт,
-проходит CPU-тесты (потому что на CPU `ParallelFor` вырождается в обычный цикл)
-и создаёт ложное впечатление, что фаза T12 закрыта. Проект уже держит правило
-«не заявлять непроверенное»; здесь оно применяется к самому себе.
-
-Поэтому итог РП7 — список выше: он готов к исполнению за один заход, как только
-появится машина с GPU, и уже сейчас отвечает на поставленный в ТЗ вопрос о
-GPU-безопасности узловой ЭДС и атомарных операций.
-
-## 5. План на первый заход при появлении GPU
-
-1. `cmake --preset cuda-release` — убедиться, что конфигурация проходит.
-2. Механическая замена `LoopOnCpu` → `ParallelFor` в `src/MhdAmr.cpp`.
-3. Счётчики: `ReduceOps` для полов и откатов; решение по `n_floor` в ядрах
-   (флаг наружу против атомарности внутри) — зафиксировать в ADR.
-4. Редукции `ComputeDt` / `MaxDivB` / диагностика — на `ReduceOps`.
-5. **CPU/GPU parity:** тот же вход, побитовое или до `1e-12` совпадение
-   диапазонов `ρ`, `p` и `max|divB|`; тест по образцу `mpi.decomposition_parity`.
-6. Бенчмарк на вихре Орзага–Танга `128²` и `512²` по протоколу
-   `scripts/benchmark.py` (прогрев + ≥5 повторов, медиана и MAD).
-7. Профиль Nsight на горячем пути — ожидаемо `FillPatchFaces` (29.7 % на CPU,
-   см. `T09_TIMING.md`), а не физика.
+- Нет выполненного CUDA runtime/parity результата до запуска на RTX 4090.
+- Нет multi-rank MPI + GPU gate, GPU scaling, profiling Nsight или сравнения
+  производительности с CPU.
+- Нет основания заявлять ускорение, полную GPU-портируемость ввода-вывода или
+  завершённость T12. Это следующие gate после успешного single-GPU parity.
