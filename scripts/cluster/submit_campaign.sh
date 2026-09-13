@@ -70,7 +70,14 @@ cp "$site" "$campaign_dir/site.env"
 submit() {
     local label="$1"; shift
     local result
-    if (( dry_run )); then printf 'DRY RUN %-18s' "$label" >&2; printf ' %q' "$@" >&2; printf '\n' >&2; return; fi
+    if (( dry_run )); then
+        printf 'DRY RUN %-18s' "$label" >&2; printf ' %q' "$@" >&2; printf '\n' >&2
+        # Холостой прогон обещает показать команды, которые будут поданы, поэтому
+        # он возвращает условный job id: иначе зависимости не попадут в вывод и
+        # порядок заданий будет выглядеть иначе, чем при настоящей подаче.
+        printf 'DRYRUN_JOBID_%s\n' "${label//-/_}"
+        return
+    fi
     result="$("$@")"
     printf '%-18s %s\n' "$label" "$result" | tee -a "$campaign_dir/submitted-jobs.txt" >&2
     # --parsable can append ;cluster. SLURM dependencies require only job ID.
@@ -85,17 +92,14 @@ export MHD_MODULES MHD_CPU_CONFIG MHD_CPU_COUNTS MHD_OMP_COUNTS MHD_WEAK_STEPS
 export MHD_LEGACY_CASE MHD_LEGACY_NX MHD_LEGACY_NY MHD_GPU_ARCH
 exports="ALL"
 common_cpu=(sbatch --parsable --export="$exports" --account="$MHD_CPU_ACCOUNT" --partition="$MHD_CPU_PARTITION" --nodes="$MHD_CPU_NODES" --ntasks-per-node="$MHD_CPU_RANKS_PER_NODE" --cpus-per-task="$MHD_CPU_THREADS_PER_RANK" --time="$MHD_CPU_TIME" --output="$campaign_dir/slurm-%j-%x.out")
+# Замеры идут только после успешной валидации: считать быстро неверно смысла нет.
 validation="$(submit amrex-validation "${common_cpu[@]}" "$root/scripts/cluster/amrex_cpu_validation.sbatch")"
-if (( ! dry_run )); then
-    cpu_after_validation=("${common_cpu[@]}" "--dependency=afterok:$validation")
-else
-    cpu_after_validation=("${common_cpu[@]}")
-fi
+cpu_after_validation=("${common_cpu[@]}" "--dependency=afterok:$validation")
 submit amrex-strong "${cpu_after_validation[@]}" "$root/scripts/cluster/amrex_cpu_strong.sbatch"
 submit amrex-weak "${cpu_after_validation[@]}" "$root/scripts/cluster/amrex_cpu_weak.sbatch"
 max_omp="$(tr ',' '\n' <<<"$MHD_OMP_COUNTS" | sort -n | tail -1)"
 omp=(sbatch --parsable --export="$exports" --account="$MHD_CPU_ACCOUNT" --partition="$MHD_CPU_PARTITION" --nodes=1 --ntasks=1 --cpus-per-task="$max_omp" --time="$MHD_CPU_TIME" --output="$campaign_dir/slurm-%j-%x.out")
-if (( ! dry_run )); then omp+=("--dependency=afterok:$validation"); fi
+omp+=("--dependency=afterok:$validation")
 submit amrex-omp "${omp[@]}" "$root/scripts/cluster/amrex_cpu_omp.sbatch"
 legacy_cpus="${MHD_LEGACY_BUILD_CPUS:-$MHD_CPU_RANKS_PER_NODE}"
 legacy=(sbatch --parsable --export="$exports" --account="$MHD_CPU_ACCOUNT" --partition="$MHD_CPU_PARTITION" --nodes=1 --ntasks=1 --cpus-per-task="$legacy_cpus" --time="$MHD_CPU_TIME" --output="$campaign_dir/slurm-%j-%x.out")
