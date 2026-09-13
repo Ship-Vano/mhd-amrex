@@ -31,6 +31,25 @@ int main(int argc, char* argv[])
     std::vector<char*> args;
     args.push_back(argv[0]);
     for (int i = 2; i < argc; ++i) args.push_back(argv[i]);
+
+    // AMReX по умолчанию резервирует под арену около 3/4 памяти устройства.
+    // Для двумерного решателя это на порядки больше нужного (самая крупная
+    // каноническая задача — сотни мегабайт), а на карте, часть которой занята
+    // другим процессом, резервирование просто не проходит: инициализация падает
+    // с "CUDA error 2 ... out of memory" ещё до первого шага, и сообщение никак
+    // не намекает, что память держит кто-то посторонний.
+    // Арена растёт по мере надобности, поэтому скромный начальный размер ничего
+    // не ломает. Переопределяется явно:  amrex.the_arena_init_size=<байт>
+#ifdef AMREX_USE_GPU
+    // Строка живёт до конца main: args хранит указатель на её буфер.
+    std::string arena_default = "amrex.the_arena_init_size=268435456";   // 256 МиБ
+    bool arena_requested = false;
+    for (int i = 2; i < argc; ++i)
+        if (std::string(argv[i]).rfind("amrex.the_arena_init_size", 0) == 0)
+            arena_requested = true;
+    if (!arena_requested) args.push_back(arena_default.data());
+#endif
+
     int    amrex_argc = static_cast<int>(args.size());
     char** amrex_argv = args.data();
 
