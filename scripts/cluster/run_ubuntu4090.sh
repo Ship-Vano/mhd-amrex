@@ -4,13 +4,14 @@
 # the script also performs the CUDA execution/parity gate on the allocated GPU.
 set -euo pipefail
 
-usage() { echo "Usage: $0 --legacy-source /path/to/MHD2D --artifact-root /path/to/artifacts [--cuda-validation]"; }
+usage() { echo "Usage: $0 --legacy-source /path/to/MHD2D --artifact-root /path/to/artifacts [--cuda-validation] [--gpu-arch NN]"; }
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-legacy=""; artifact_root=""; cuda_validation=0
+legacy=""; artifact_root=""; cuda_validation=0; gpu_arch=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --legacy-source) legacy="${2:-}"; shift 2 ;;
     --artifact-root) artifact_root="${2:-}"; shift 2 ;;
+    --gpu-arch) gpu_arch="${2:-}"; shift 2 ;;
     --cuda-validation|--cuda-probe) cuda_validation=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -30,7 +31,20 @@ MHD_SOURCE_DIR="$root" MHD_LEGACY_SOURCE="$legacy" MHD_ARTIFACT_ROOT="$artifact_
 if (( cuda_validation )); then
   command -v nvidia-smi >/dev/null || { echo "--cuda-validation requested but no NVIDIA driver is visible" >&2; exit 2; }
   command -v nvcc >/dev/null || { echo "--cuda-validation requested but nvcc is unavailable" >&2; exit 2; }
-  MHD_SOURCE_DIR="$root" MHD_ARTIFACT_ROOT="$artifact_root" MHD_CAMPAIGN_ID="$campaign" MHD_EXPECTED_COMMIT="$MHD_EXPECTED_COMMIT" MHD_MODULES=: MHD_GPU_ARCH=89 MHD_JOB_KIND=amrex-cuda-validation \
+  # Архитектура берётся у самой карты, а не зашивается. Раньше здесь стояло 89
+  # (RTX 4090): на любой другой карте собирался бинарник без подходящего kernel
+  # image, и это выяснялось только при запуске.
+  if [[ -z "$gpu_arch" ]]; then
+    cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
+    if [[ "$cc" =~ ^[0-9]{2,3}$ ]]; then
+      gpu_arch="$cc"
+      echo "detected compute capability sm_$gpu_arch" >&2
+    else
+      echo "cannot detect compute capability; pass --gpu-arch NN (4090=89, 3090=86, A100=80, H100=90)" >&2
+      exit 2
+    fi
+  fi
+  MHD_SOURCE_DIR="$root" MHD_ARTIFACT_ROOT="$artifact_root" MHD_CAMPAIGN_ID="$campaign" MHD_EXPECTED_COMMIT="$MHD_EXPECTED_COMMIT" MHD_MODULES=: MHD_GPU_ARCH="$gpu_arch" MHD_JOB_KIND=amrex-cuda-validation \
     bash -c 'source "$MHD_SOURCE_DIR/scripts/cluster/lib_campaign.sh"; campaign_init_environment; campaign_job_dir; campaign_build_dir; campaign_capture_environment; campaign_run_cuda_validation; campaign_write_status pass "CUDA CTest and single-GPU CPU/GPU parity passed; no GPU performance claim"'
 fi
 echo "campaign directory: $artifact_root/$campaign"
