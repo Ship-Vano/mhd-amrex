@@ -41,6 +41,28 @@ public:
     void InitData();                 // НУ на всей иерархии
     void Evolve();                   // основной цикл по времени
 
+    // --- методы, тела которых содержат device-лямбды ------------------------
+    // nvcc запрещает extended __device__ lambda внутри private или protected
+    // метода класса (CUDA 12.4: "The enclosing parent function ... cannot have
+    // private or protected access within its class"). Поэтому эти методы
+    // объявлены public не по соображениям интерфейса, а по требованию
+    // компилятора; вызывать их извне не предполагается.
+    // Инвариант проверяется тестом arch.gpu_portability, чтобы возврат метода
+    // в private не всплыл через полчаса сборки на машине с GPU.
+    amrex::Real ComputeDt() const;
+    void ComputeFluxesAndEmf(int lev);                  // HLLD-потоки и узловые Ez
+    void ApplyUpdates(int lev, amrex::Real dt);         // газ (Годунов) + Фарадей (Стокс)
+    void PrintStateRanges() const;                      // min/max rho и p по иерархии
+    amrex::Real TotalEnergyPart(int which) const;       // 0 -> магнитная, 1 -> тепловая
+    void InitLevelData(int lev);                        // НУ (через Az — бездивергентно)
+    void FillPhysicalFaceBoundary(int lev);             // ГУ для граневых B
+    void SyncCellB(int lev);                            // интерполяция граней в центры (RT0)
+    void SyncCellBAfterRegrid(int lev);                 // SyncCellB + компенсация ½|B|²
+    amrex::Real MaxDivB(int lev) const;
+    amrex::Long CountNonPositiveCells() const;          // ячейки, требующие floor ρ/p
+    void WritePlotFile(int step, amrex::Real time);
+    void ErrorEst(int lev, amrex::TagBoxArray& tags, amrex::Real time, int ngrow) override;
+
 protected:
     // --- интерфейс AmrCore -------------------------------------------------
     void MakeNewLevelFromScratch(int lev, amrex::Real time,
@@ -53,16 +75,12 @@ protected:
                                  const amrex::BoxArray& ba,
                                  const amrex::DistributionMapping& dm) override;
     void ClearLevel             (int lev) override;
-    void ErrorEst (int lev, amrex::TagBoxArray& tags, amrex::Real time, int ngrow) override;
 
 private:
     // --- шаг по времени ------------------------------------------------------
-    amrex::Real ComputeDt() const;
     void AdvanceHierarchy(amrex::Real dt);              // один шаг RK2 на всех уровнях
     void EulerStage(amrex::Real dt);                    // одна стадия: потоки→ЭДС→обновление
-    void ComputeFluxesAndEmf(int lev);                  // HLLD-потоки и узловые Ez
     void SyncEmfAcrossLevels();                         // инжекция мелких Ez в грубые узлы
-    void ApplyUpdates(int lev, amrex::Real dt);         // газ (Годунов) + Фарадей (Стокс)
     void AverageDownAll();                              // согласование уровней
 
     // --- консервативность на стыке уровней (reflux) -------------------------
@@ -76,26 +94,17 @@ private:
     void RefluxAll();                                   // коррекция грубых ячеек
     // Σ по иерархии без учёта перекрытых грубых ячеек: диагностика сохранения.
     amrex::Real TotalConserved(int comp) const;
-    void PrintStateRanges() const;   // min/max rho и p по иерархии
     // which = 0 -> магнитная энергия, 1 -> тепловая
-    amrex::Real TotalEnergyPart(int which) const;
 
     // --- сервис ---------------------------------------------------------------
     void AllocLevel(int lev, const amrex::BoxArray& ba,
                     const amrex::DistributionMapping& dm);
-    void InitLevelData(int lev);                        // НУ (через Az — бездивергентно)
     void FillPatchCells(int lev, amrex::MultiFab& mf, amrex::Real time);
     void FillPatchFaces(int lev,
                         amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM> bf,
                         amrex::Real time);
-    void FillPhysicalFaceBoundary(int lev);             // ГУ для граневых B
-    void SyncCellB(int lev);                            // интерполяция граней в центры (RT0)
     // SyncCellB + компенсация полной энергии на изменение ½|B|², чтобы при
     // перестроении сетки не менялось давление (см. cfg_.regrid_preserve_pressure)
-    void SyncCellBAfterRegrid(int lev);
-    amrex::Real MaxDivB(int lev) const;
-    amrex::Long CountNonPositiveCells() const;          // ячейки, требующие floor ρ/p
-    void WritePlotFile(int step, amrex::Real time);
 
     SimConfig cfg_;
     DeviceProblem prob_;  // POD: safe to capture by value in device lambdas
