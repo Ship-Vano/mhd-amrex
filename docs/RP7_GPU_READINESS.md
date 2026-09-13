@@ -78,39 +78,145 @@ CUDA compile/run здесь не выполнялся. Из этого не сл
 неуспешность CUDA-порта: проверено, что порт не сломал CPU-путь, а не то, что
 он работает на устройстве.
 
-## Первый gate на RTX 4090
+## Первый gate на машине с GPU
 
-Нужны CUDA Toolkit 12.x, совместимый NVIDIA driver, CMake, GCC/G++ и Python.
-Сначала выполняется именно correctness gate, затем — performance work:
+Порядок именно такой: сначала корректность, потом скорость. До прохождения
+parity не измерять ускорение — иначе будет измерена скорость неизвестно чего.
+
+### 0. Опубликовать ревизию и зафиксировать её на сервере
+
+Сервер должен собирать **конкретный commit**, а не «свежий main»: иначе
+результат не привязан ни к чему. Локальные коммиты должны быть отправлены —
+иначе `git clone` принесёт код без последних правок.
+
+```sh
+git push origin main                 # на рабочей станции
+```
+
+```sh
+git clone https://github.com/Ship-Vano/mhd-amrex.git   # на сервере
+cd mhd-amrex
+git checkout <SHA>                   # ревизия, к которой привяжется результат
+git status --short                   # обязано быть пусто
+```
+
+### 1. Проверить окружение на самом GPU-узле
+
+```sh
+nvidia-smi ; nvcc --version ; cmake --version ; g++ --version ; python3 --version
+```
+
+Если узел выдаётся через очередь — всё это внутри выделенной сессии, не на
+login-узле. Нужны NVIDIA driver, CUDA Toolkit 12.x, CMake, GCC, Python; MPI
+нужен, потому что пресет `cuda-release` собирается с `MHD_MPI=ON`.
+
+**Доступ в сеть на этапе configure.** AMReX 25.01 и nlohmann/json скачиваются
+`FetchContent`. На изолированной машине configure упадёт на загрузке, а не на
+CUDA. Отключается по отдельности, обе сразу:
+
+```sh
+cmake --preset cuda-release -DMHD_FETCH_AMREX=OFF -DMHD_FETCH_JSON=OFF
+```
+
+тогда обе зависимости берутся через `find_package` и должны быть установлены.
+
+### 2. Сконфигурировать под свою карту и свой компилятор
+
+Архитектура: RTX 4090 → `89`, RTX 3090 → `86`, A100 → `80`, H100 → `90`.
+Пресет нацелен на 4090; для другой карты значение переопределяется.
+
+У CUDA есть верхняя граница поддерживаемой версии host-компилятора, а пресет
+берёт системный `gcc`/`g++`. Если системный слишком новый, configure падает с
+`unsupported GNU version` — тогда явно указать совместимый:
+
+```sh
+cmake --preset cuda-release \
+  -DCMAKE_C_COMPILER=/usr/bin/gcc-13 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 \
+  -DCMAKE_CUDA_ARCHITECTURES=89
+```
+
+`AMReX_CUDA_FASTMATH` в пресете выключен намеренно: сначала нужна численная
+эквивалентность, а fast-math её ломает.
+
+### 3. Собрать обе сборки и пройти CTest
+
+CPU-сборка нужна не «на всякий случай», а как эталон для parity.
 
 ```sh
 cmake --preset cpu-release && cmake --build --preset cpu-release
-cmake --preset cuda-release && cmake --build --preset cuda-release
+cmake --build --preset cuda-release
 ctest --preset cuda-release -E '^mpi\.decomposition_parity$'
-python3 tests/check_cpu_gpu_parity.py \
-  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
-  --config inputs/uniform_const.json --output-dir benchmarks/raw/cuda/parity-uniform
-python3 tests/check_cpu_gpu_parity.py \
-  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
-  --config inputs/orszag_tang_uniform.json --output-dir benchmarks/raw/cuda/parity-orszag
 ```
 
-Parity требует совпадения счётчиков (`fallbacks`, `floors`, `nonpositive`) и
-сопоставляет `rho/p` и нормы `div B` с `atol=5e-11`, `rtol=5e-10`. Сырые логи
-двух бинарников записываются в `--output-dir`, чтобы их можно было передать
-анализатору без повторного запуска.
+Два теста в этом прогоне надо трактовать правильно, иначе зелёный цвет введёт
+в заблуждение:
 
-Для Ubuntu есть одна команда, создающая изолированный campaign artifact:
+- `mpi.decomposition_parity` **исключён** потому, что гоняет 1/2/4 ранга, а
+  одна карта — не валидная multi-GPU конфигурация. Это свойство стенда, а не
+  обход неудобного теста; на многокарточном узле его надо вернуть.
+- `omp.thread_parity` в этой сборке пройдёт **вхолостую**: `MHD_OPENMP=OFF`,
+  сравниваются два одинаковых прогона. В результатах его помечать `N/A`, а не
+  засчитывать как проверку OpenMP.
+
+### 4. Parity: сначала точный тест, потом эволюционирующий
+
+```sh
+python3 tests/check_cpu_gpu_parity.py \
+  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
+  --config inputs/uniform_const.json \
+  --output-dir benchmarks/raw/cuda/parity-uniform
+
+python3 tests/check_cpu_gpu_parity.py \
+  --cpu build/cpu-release/mhd2d --gpu build/cuda-release/mhd2d \
+  --config inputs/orszag_tang_uniform.json \
+  --output-dir benchmarks/raw/cuda/parity-orszag
+```
+
+Что именно сверяется:
+
+- **счётчики** (`fallbacks`, `floors`, `nonpositive`) — строго, целые числа.
+  Расхождение означает, что GPU пошёл по другим ветвям схемы;
+- **диапазоны `rho`, `p`** — с допуском: порядок редукций, FMA-контракция и
+  число нитей у сборок разные, последние биты обязаны разойтись;
+- **`div B`** — у каждой сборки отдельно, против абсолютного порога `1e-12`,
+  того же, что у CPU-тестов. CPU против GPU эту величину сравнивать нельзя:
+  это максимум разности почти равных граневых значений, и один последний бит
+  меняет её на десятки процентов (измерено: `8.2e-13 → 4.2e-12` между двумя
+  CPU-сборками при совпавшем решении). `max|divB|` печатается, но не гейтится.
+
+Порядок задач не случаен. `uniform_const` — точный тест: постоянное состояние
+обязано сохраняться побитово, накапливать округление там нечему. Если parity
+падает уже на нём, дело в самом порте, и длинные задачи запускать рано.
+Орзага–Танг за 323 шага — уже накопление, и допуск `5e-11` там может оказаться
+оптимистичным. Если не проходит с небольшим превышением — **ослабленный
+`--rtol` и причина записываются в манифест кампании**, а не подбираются молча
+до зелёного.
+
+### 5. Одной командой
+
+То же самое, но с изоляцией артефактов и записью версий:
 
 ```sh
 scripts/cluster/run_ubuntu4090.sh --legacy-source /path/to/MHD2D \
   --artifact-root /data/mhd-artifacts --cuda-validation
 ```
 
-Для SLURM/K10 добавляется `--cuda-validation` к
-`scripts/cluster/submit_campaign.sh`. Job записывает версии `nvcc`, GPU,
-configure/build/CTest и parity logs. Сборки создаются в artifact/scratch;
-source checkout остаётся только для чтения.
+Скрипт отказывается работать на грязной рабочей копии, клонирует legacy-источник
+внутрь артефакта и пишет `nvidia-smi`, версии `nvcc`/компилятора, commit,
+логи configure/build/CTest и parity. Для SLURM то же даёт
+`submit_campaign.sh --cuda-validation`.
+
+### Что сохранить после успешного прохождения
+
+Commit, вывод `nvidia-smi`, версии CUDA и компилятора, каталоги
+`benchmarks/raw/cuda/`. Без этого parity не является воспроизводимым фактом.
+
+### Дальше
+
+Single-GPU benchmark → Nsight → multi-GPU MPI. Каждый из них — отдельный gate,
+и ни один не начинается до parity.
 
 ## Чего этот change set не утверждает
 

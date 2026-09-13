@@ -9,6 +9,9 @@
 #                                          читает и нативные plotfile'ы AMReX)
 #   -DMHD_FETCH_AMREX=ON|OFF (default ON) — скачать и собрать AMReX автоматически;
 #                                          при OFF используется find_package(AMReX)
+#   -DMHD_FETCH_JSON=ON|OFF  (default ON) — то же для nlohmann/json. Обе загрузки
+#                                          происходят при configure, поэтому на
+#                                          машине без сети выключать надо обе.
 #
 # Примеры:
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -32,14 +35,23 @@ option(MHD_MPI         "Enable MPI"                    ON)
 option(MHD_OPENMP      "Enable OpenMP"                 ON)
 option(MHD_HDF5        "Enable HDF5 plotfiles"         OFF)
 option(MHD_FETCH_AMREX "Fetch and build AMReX via FetchContent" ON)
+option(MHD_FETCH_JSON  "Fetch nlohmann/json via FetchContent" ON)
 
 include(FetchContent)
 
 # --- nlohmann/json (single-header, только заголовки) -------------------------
-FetchContent_Declare(nlohmann_json
-  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-)
-FetchContent_MakeAvailable(nlohmann_json)
+# Обе зависимости скачиваются на этапе конфигурации, поэтому на машине без
+# доступа в сеть их нужно уметь выключить по отдельности: раньше
+# MHD_FETCH_AMREX=OFF снимал только AMReX, и configure всё равно падал на
+# загрузке JSON.
+if(MHD_FETCH_JSON)
+  FetchContent_Declare(nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  )
+  FetchContent_MakeAvailable(nlohmann_json)
+else()
+  find_package(nlohmann_json REQUIRED)
+endif()
 
 # --- AMReX --------------------------------------------------------------------
 # Документация по сборке: https://amrex-codes.github.io/amrex/docs_html/BuildingAMReX.html
