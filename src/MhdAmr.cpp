@@ -692,15 +692,18 @@ Real MhdAmr::ComputeDt() const
 {
     BL_PROFILE("MhdAmr::ComputeDt");
     Real dt = std::numeric_limits<Real>::max();
+    const Real gam = cfg_.gamma;
     for (int lev = 0; lev <= finest_level; ++lev) {
         const auto dx = Geom(lev).CellSizeArray();
+        // Объекты редукции создаются один раз на уровень, а не на каждый бокс:
+        // на GPU конструктор выделяет device-память, а чтение .value() -- это
+        // синхронизация, и внутри цикла по боксам они шли бы на каждый бокс.
+        ReduceOps<ReduceOpMin> reduce_op;
+        ReduceData<Real> reduce_data(reduce_op);
+        using ReduceTuple = ReduceData<Real>::Type;
         for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
             const Box& bx = mfi.validbox();
             auto u = state_[lev].const_array(mfi);
-            const Real gam = cfg_.gamma;
-            ReduceOps<ReduceOpMin> reduce_op;
-            ReduceData<Real> reduce_data(reduce_op);
-            using ReduceTuple = ReduceData<Real>::Type;
             reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
                 Real uc[NCONS], q[NPRIM];
                 for (int n = 0; n < NCONS; ++n) uc[n] = u(i,j,k,n);
@@ -712,8 +715,8 @@ Real MhdAmr::ComputeDt() const
                 const Real dty = dx[1] / (std::abs(q[QV]) + cfy);
                 return { dtx < dty ? dtx : dty };
             });
-            dt = std::min(dt, amrex::get<0>(reduce_data.value(reduce_op)));
         }
+        dt = std::min(dt, amrex::get<0>(reduce_data.value(reduce_op)));
     }
     ParallelDescriptor::ReduceRealMin(dt);
     return cfg_.cfl * dt;
@@ -723,20 +726,20 @@ Real MhdAmr::MaxDivB(int lev) const
 {
     const auto dx = Geom(lev).CellSizeArray();
     Real m = 0.0;
+    ReduceOps<ReduceOpMax> reduce_op;
+    ReduceData<Real> reduce_data(reduce_op);
+    using ReduceTuple = ReduceData<Real>::Type;
     for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
         const Box& bx = mfi.validbox();
         auto bxf = bface_[lev][0].const_array(mfi);
         auto byf = bface_[lev][1].const_array(mfi);
-        ReduceOps<ReduceOpMax> reduce_op;
-        ReduceData<Real> reduce_data(reduce_op);
-        using ReduceTuple = ReduceData<Real>::Type;
         reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
             const Real d = (bxf(i+1,j,k) - bxf(i,j,k)) / dx[0]
                          + (byf(i,j+1,k) - byf(i,j,k)) / dx[1];
             return { std::abs(d) };
         });
-        m = std::max(m, amrex::get<0>(reduce_data.value(reduce_op)));
     }
+    m = std::max(m, amrex::get<0>(reduce_data.value(reduce_op)));
     ParallelDescriptor::ReduceRealMax(m);
     return m;
 }
@@ -848,15 +851,17 @@ amrex::Real MhdAmr::TotalEnergyPart(int which) const
         if (has_finer)
             covered = amrex::makeFineMask(grids[lev], dmap[lev], grids[lev+1],
                                           refRatio(lev), 0, 1);
-        Real sum = 0.0;
+        // Объект редукции -- на уровень, а не на бокс: на GPU его конструктор
+        // выделяет device-память, а reduce_data.value() синхронизируется с
+        // устройством, и внутри цикла по боксам это происходило бы на каждом.
+        ReduceOps<ReduceOpSum> reduce_op;
+        ReduceData<Real> reduce_data(reduce_op);
+        using ReduceTuple = ReduceData<Real>::Type;
         for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
             const Box& bx = mfi.validbox();
             auto u = state_[lev].const_array(mfi);
             Array4<const int> cov{};
             if (has_finer) cov = covered.const_array(mfi);
-            ReduceOps<ReduceOpSum> reduce_op;
-            ReduceData<Real> reduce_data(reduce_op);
-            using ReduceTuple = ReduceData<Real>::Type;
             reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
                 if (has_finer && cov(i,j,k)) return { Real(0.0) };
                 const Real rho = u(i,j,k,URHO);
@@ -868,9 +873,8 @@ amrex::Real MhdAmr::TotalEnergyPart(int which) const
                                            + u(i,j,k,UMZ)*u(i,j,k,UMZ)) / rho;
                 return { (which == 0) ? me : (u(i,j,k,UENE) - ke - me) };
             });
-            sum += amrex::get<0>(reduce_data.value(reduce_op));
         }
-        total += sum * dv;
+        total += amrex::get<0>(reduce_data.value(reduce_op)) * dv;
     }
     ParallelDescriptor::ReduceRealSum(total);
     return total;
@@ -889,17 +893,18 @@ void MhdAmr::PrintStateRanges() const
             covered = amrex::makeFineMask(grids[lev], dmap[lev], grids[lev+1],
                                           refRatio(lev), 0, 1);
         }
+        const Real gam = cfg_.gamma;
+        const Real hi_identity = -std::numeric_limits<Real>::max();
+        const Real lo_identity = std::numeric_limits<Real>::max();
+        // См. ComputeDt: объект редукции создаётся на уровень, не на бокс.
+        ReduceOps<ReduceOpMin,ReduceOpMax,ReduceOpMin,ReduceOpMax> reduce_op;
+        ReduceData<Real,Real,Real,Real> reduce_data(reduce_op);
+        using ReduceTuple = ReduceData<Real,Real,Real,Real>::Type;
         for (MFIter mfi(state_[lev]); mfi.isValid(); ++mfi) {
             const Box& bx = mfi.validbox();
             auto u = state_[lev].const_array(mfi);
             Array4<const int> cov{};
             if (has_finer) cov = covered.const_array(mfi);
-            const Real gam = cfg_.gamma;
-            const Real hi_identity = -std::numeric_limits<Real>::max();
-            const Real lo_identity = std::numeric_limits<Real>::max();
-            ReduceOps<ReduceOpMin,ReduceOpMax,ReduceOpMin,ReduceOpMax> reduce_op;
-            ReduceData<Real,Real,Real,Real> reduce_data(reduce_op);
-            using ReduceTuple = ReduceData<Real,Real,Real,Real>::Type;
             reduce_op.eval(bx, reduce_data, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> ReduceTuple {
                 if (has_finer && cov(i,j,k)) return {lo_identity,hi_identity,lo_identity,hi_identity};
                 Real uc[NCONS], q[NPRIM];
@@ -907,12 +912,12 @@ void MhdAmr::PrintStateRanges() const
                 cons_to_prim(uc, q, gam);
                 return {q[QRHO],q[QRHO],q[QP],q[QP]};
             });
-            const auto values = reduce_data.value(reduce_op);
-            rho_lo = std::min(rho_lo, amrex::get<0>(values));
-            rho_hi = std::max(rho_hi, amrex::get<1>(values));
-            p_lo   = std::min(p_lo,   amrex::get<2>(values));
-            p_hi   = std::max(p_hi,   amrex::get<3>(values));
         }
+        const auto values = reduce_data.value(reduce_op);
+        rho_lo = std::min(rho_lo, amrex::get<0>(values));
+        rho_hi = std::max(rho_hi, amrex::get<1>(values));
+        p_lo   = std::min(p_lo,   amrex::get<2>(values));
+        p_hi   = std::max(p_hi,   amrex::get<3>(values));
     }
     ParallelDescriptor::ReduceRealMin(rho_lo);
     ParallelDescriptor::ReduceRealMax(rho_hi);
