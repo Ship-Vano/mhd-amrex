@@ -19,6 +19,7 @@ import hashlib
 import json
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,13 +39,26 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _default_cxx() -> str:
+    """Компилятор по умолчанию: сперва PATH, потом типичные пути macOS.
+
+    Жёсткий путь Homebrew делал скрипт неработающим на Linux, где эти прогоны и
+    идут (кластер, машина с GPU).
+    """
+    for name in ("g++-15", "g++-14", "g++-13", "g++"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return "/opt/homebrew/opt/gcc/bin/g++-15"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", type=Path, required=True)
     ap.add_argument("--artifact-dir", type=Path, required=True)
     ap.add_argument("--overlay", type=Path,
                     default=ROOT / "legacy/patches/0001-legacy-corrected-physics.patch")
-    ap.add_argument("--compiler", default="/opt/homebrew/opt/gcc/bin/g++-15")
+    ap.add_argument("--compiler", default=_default_cxx())
     ap.add_argument("--nx", type=int, default=400)
     args = ap.parse_args()
 

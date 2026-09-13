@@ -1,14 +1,16 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Unix Makefiles",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "/opt/homebrew/opt/gcc/bin/gcc-15",
-        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/gcc/bin/g++-15",
         "MHD_HDF5": "OFF",
         "BUILD_TESTING": "ON"
       }
@@ -90,8 +92,6 @@
       "binaryDir": "${sourceDir}/build/cuda-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_COMPILER": "gcc",
-        "CMAKE_CXX_COMPILER": "g++",
         "MHD_MPI": "ON",
         "MHD_OPENMP": "OFF",
         "AMReX_GPU_BACKEND": "CUDA",
@@ -101,20 +101,84 @@
     }
   ],
   "buildPresets": [
-    { "name": "release",      "configurePreset": "release",      "jobs": 8 },
-    { "name": "cpu-release",  "configurePreset": "cpu-release",  "jobs": 8 },
-    { "name": "cpu-debug",    "configurePreset": "cpu-debug",    "jobs": 8 },
-    { "name": "mpi-release",  "configurePreset": "mpi-release",  "jobs": 8 },
-    { "name": "profile",      "configurePreset": "profile",      "jobs": 8 },
-    { "name": "hdf5-release", "configurePreset": "hdf5-release", "jobs": 8 },
-    { "name": "cuda-release", "configurePreset": "cuda-release", "jobs": 8 }
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 8
+    },
+    {
+      "name": "cpu-release",
+      "configurePreset": "cpu-release",
+      "jobs": 8
+    },
+    {
+      "name": "cpu-debug",
+      "configurePreset": "cpu-debug",
+      "jobs": 8
+    },
+    {
+      "name": "mpi-release",
+      "configurePreset": "mpi-release",
+      "jobs": 8
+    },
+    {
+      "name": "profile",
+      "configurePreset": "profile",
+      "jobs": 8
+    },
+    {
+      "name": "hdf5-release",
+      "configurePreset": "hdf5-release",
+      "jobs": 8
+    },
+    {
+      "name": "cuda-release",
+      "configurePreset": "cuda-release",
+      "jobs": 8
+    }
   ],
   "testPresets": [
-    { "name": "release",     "configurePreset": "release",     "output": { "outputOnFailure": true } },
-    { "name": "cpu-release", "configurePreset": "cpu-release", "output": { "outputOnFailure": true } },
-    { "name": "cpu-debug",   "configurePreset": "cpu-debug",   "output": { "outputOnFailure": true } },
-    { "name": "mpi-release", "configurePreset": "mpi-release", "output": { "outputOnFailure": true } },
-    { "name": "profile",     "configurePreset": "profile",     "output": { "outputOnFailure": true } },
-    { "name": "cuda-release", "configurePreset": "cuda-release", "output": { "outputOnFailure": true } }
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cpu-release",
+      "configurePreset": "cpu-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cpu-debug",
+      "configurePreset": "cpu-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "mpi-release",
+      "configurePreset": "mpi-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "profile",
+      "configurePreset": "profile",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cuda-release",
+      "configurePreset": "cuda-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

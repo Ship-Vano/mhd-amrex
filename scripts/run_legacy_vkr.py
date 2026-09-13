@@ -51,12 +51,25 @@ def tool_version(args: list[str]) -> str:
         return "unavailable"
 
 
+def _default_cxx() -> str:
+    """Компилятор по умолчанию: сперва PATH, потом типичные пути macOS.
+
+    Жёсткий путь Homebrew делал скрипт неработающим на Linux, где эти прогоны и
+    идут (кластер, машина с GPU).
+    """
+    for name in ("g++-15", "g++-14", "g++-13", "g++"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return "/opt/homebrew/opt/gcc/bin/g++-15"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True, help="clean MHD2D source at the official commit")
     parser.add_argument("--case", choices=CASES, required=True)
     parser.add_argument("--artifact-dir", type=Path, required=True)
-    parser.add_argument("--compiler", default=shutil.which("g++-15") or "/opt/homebrew/opt/gcc/bin/g++-15")
+    parser.add_argument("--compiler", default=_default_cxx())
     parser.add_argument("--jobs", type=int, default=4)
     args = parser.parse_args()
     source, artifact = args.source.resolve(), args.artifact_dir.resolve()

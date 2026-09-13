@@ -257,6 +257,19 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def _default_cxx() -> str:
+    """Компилятор по умолчанию: сперва PATH, потом типичные пути macOS.
+
+    Жёсткий путь Homebrew делал скрипт неработающим на Linux, где эти прогоны и
+    идут (кластер, машина с GPU).
+    """
+    for name in ("g++-15", "g++-14", "g++-13", "g++"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return "/opt/homebrew/opt/gcc/bin/g++-15"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True,
@@ -284,7 +297,7 @@ def main() -> int:
     parser.add_argument("--structured-ny", type=int,
                         help="override the case structured y resolution (rectangles)")
     parser.add_argument("--compiler", default=shutil.which("g++-15") or
-                        "/opt/homebrew/opt/gcc/bin/g++-15")
+                        _default_cxx())
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--omp-threads", type=int, default=1)
     parser.add_argument("--maxh", type=float,

@@ -21,7 +21,33 @@
 # macOS: OpenMP у Apple clang требует libomp:  brew install libomp open-mpi hdf5
 # =============================================================================
 cmake_minimum_required(VERSION 3.20)
+
+# Компилятор НЕ прибивается в пресетах: они обязаны конфигурироваться и на
+# Linux. На macOS у Apple clang нет OpenMP без libomp, поэтому там, и только
+# там, подставляется Homebrew GCC -- если пользователь не задал компилятор сам
+# и если он вообще установлен.
+if(APPLE AND NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+  find_program(MHD_BREW_GXX NAMES g++-15 g++-14 g++-13
+               HINTS /opt/homebrew/opt/gcc/bin /usr/local/opt/gcc/bin)
+  find_program(MHD_BREW_GCC NAMES gcc-15 gcc-14 gcc-13
+               HINTS /opt/homebrew/opt/gcc/bin /usr/local/opt/gcc/bin)
+  if(MHD_BREW_GXX AND MHD_BREW_GCC)
+    set(CMAKE_CXX_COMPILER "${MHD_BREW_GXX}" CACHE FILEPATH "" FORCE)
+    set(CMAKE_C_COMPILER   "${MHD_BREW_GCC}" CACHE FILEPATH "" FORCE)
+  endif()
+endif()
+
 project(mhd2d CXX)
+
+# CUDA включается в ОБЛАСТИ ВЕРХНЕГО УРОВНЯ, а не только внутри AMReX.
+# enable_language() в подкаталоге не поднимает CMAKE_CUDA_* в родительскую
+# область, и generate падает с "No known features for CUDA compiler" на цели,
+# чьи исходники помечены как CUDA здесь.
+if(AMReX_GPU_BACKEND STREQUAL "CUDA")
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+endif()
 
 include(CTest)
 
