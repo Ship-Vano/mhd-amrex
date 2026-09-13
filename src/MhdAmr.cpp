@@ -48,7 +48,7 @@ struct ExtDirGpuFill {
 
     AMREX_GPU_DEVICE void operator() (const IntVect& iv, Array4<Real> const& arr,
                                       int dcomp, int numcomp, GeometryData const& geom,
-                                      Real, const BCRec* bcr, int, int) const noexcept
+                                      Real, const BCRec* bcr, int, int orig_comp) const noexcept
     {
         const Box& domain = geom.Domain();
         bool ext = false;
@@ -71,7 +71,12 @@ struct ExtDirGpuFill {
             q[QBY] =-(problem.az(x+Real(0.5)*dx0,y)-problem.az(x-Real(0.5)*dx0,y))/dx0;
         }
         prim_to_cons(q, uc, gamma);
-        for (int n = 0; n < numcomp && dcomp+n < NCONS; ++n) arr(iv,dcomp+n) = uc[dcomp+n];
+        // dcomp -- номер компоненты в приёмнике, orig_comp -- в состоянии.
+        // Сейчас все вызовы заполняют весь диапазон, и оба равны нулю, но брать
+        // источник по dcomp верно лишь по совпадению: заполнение подмножества
+        // компонент молча прочитало бы не те.
+        for (int n = 0; n < numcomp && orig_comp+n < NCONS; ++n)
+            arr(iv,dcomp+n) = uc[orig_comp+n];
     }
 };
 
