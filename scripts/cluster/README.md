@@ -75,18 +75,42 @@ scripts/cluster/pack_campaign.sh /data/mhd-artifacts/<campaign-id>
 
 ## Что запускать, когда доступ появится
 
-Кампания — две команды, обе через `scripts/scaling.py`, то есть через **тот же
-код**, которым сделаны замеры на рабочей станции:
+Сначала один раз описывается площадка, потом кампания подаётся одной командой:
 
 ```sh
-sbatch scripts/cluster/mhd2d_strong_scaling.sbatch    # S(p), E(p)
-sbatch scripts/cluster/mhd2d_weak_scaling.sbatch      # E_weak(p)
+cp scripts/cluster/campaign.env.example scripts/cluster/sites/k10.env
+$EDITOR scripts/cluster/sites/k10.env          # модули, account, partition, пути
+
+scripts/cluster/submit_campaign.sh --site scripts/cluster/sites/k10.env \
+    --legacy-source /path/to/MHD2D --dry-run   # посмотреть, что будет подано
+scripts/cluster/submit_campaign.sh --site scripts/cluster/sites/k10.env \
+    --legacy-source /path/to/MHD2D
 ```
+
+Файлы `sites/*.env` не попадают в Git: в них имя учётной записи и локальные
+пути. В репозитории остаётся только пример.
+
+Сабмиттер проверяет площадку до подачи заданий и отказывается, если описание
+неполно или противоречиво: не заданы обязательные переменные, запрошено больше
+рангов, чем даёт выделение, не найден конфиг задачи, рабочая копия грязная.
+Кампания с незакоммиченными изменениями невоспроизводима, поэтому это отказ, а
+не предупреждение. Каталог кампании создаётся новый на каждую подачу и
+переиспользованию не подлежит.
+
+На машине без SLURM (например, рабочая станция с RTX 4090) та же кампания
+запускается напрямую:
+
+```sh
+scripts/cluster/run_ubuntu4090.sh --legacy-source /path/to/MHD2D \
+    --artifact-root /data/mhd-artifacts --cuda-validation
+```
+
+### Почему замер делает тот же скрипт, что и на рабочей станции
 
 Отдельной «кластерной» реализации замера нет намеренно. Своя реализация
 разошлась бы с основной по определению медианы, числу повторов и проверке
-корректности, и кластерные числа стало бы не с чем сравнивать. Разница между
-рабочей станцией и кластером сведена к одному аргументу — `--launcher`:
+корректности, и кластерные числа стало бы не с чем сравнивать. Разница сведена
+к одному аргументу `scripts/scaling.py`:
 
 ```sh
 --launcher 'mpirun -np {p} --oversubscribe'   # рабочая станция (по умолчанию)
