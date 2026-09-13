@@ -9,11 +9,11 @@
 | D-002 | Provenance legacy Brio--Wu result | отсутствует config/run manifest | owner: exact input/config либо разрешение на новый run | T03, T05, T08 |
 | D-003 | Brio--Wu reference branch | **решено**: составная (compound / non-regular); подтверждено независимой схемой в T06 | — | T06 |
 | D-004 | Публикация Бисикало--Жилкина | **решено (2026-09-08)**: идентифицированы три источника, разобраны в `RP8_LITERATURE_CONTEXT.md`, встроены во введение по смыслу | — | report literature |
-| D-005 | Кластер | нет доступа и параметров | owner: scheduler, account, partition, limits, node/GPU specs | T13 |
+| D-005 | Кластер | доступ обещан (К10, ИПМ им. Келдыша); параметры площадки не получены. Оснастка готова и проверена вхолостую: `submit_campaign.sh --dry-run` подаёт 5 заданий с зависимостью замеров от валидации | owner: модули, account, partition, лимиты, ядра/узел — заполняются в `scripts/cluster/sites/<site>.env`, который не версионируется | T13 |
 | D-006 | Формат НИРС | шаблон не предоставлен | owner: template/format rules, если обязательны | final T14 formatting |
 | D-007 | AMR conservation | **решено (2026-09-03)**: gas flux reflux реализован; что сохранять при regrid — измерено, выбран вариант «полная энергия» | — | T07 |
 | D-009 | Учёт энергии при RT0-реконструкции в `legacy_corrected` | измеряется в этой сессии: `conservative` (E не трогаем, разницу поглощает `p`) против `preserve_internal` (E сдвигается на изменение магнитной энергии, `p` сохраняется) | — | T05 |
-| D-008 | GPU status | host-only loops | internal: complete CUDA work package and parity | T12 |
+| D-008 | GPU status | **CUDA-путь написан** (`ParallelFor`, POD-постановка, GPU-границы, device-счётчики и `ReduceOps`). Измерено, что перенос не изменил CPU-ответ: на всех 9 конфигурациях совпали шаги, диапазоны и все три счётчика. Не выполнено: компиляция `nvcc`, запуск на устройстве, CPU/GPU parity, замеры | internal: прогон на машине с NVIDIA GPU | T12 |
 
 ## Зафиксированные решения
 
